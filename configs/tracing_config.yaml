@@ -1,0 +1,66 @@
+# LTTng Tracing Configuration for ros2_tracing
+# Used by start_trace.sh
+
+session:
+  name_prefix: "ldos_trace"
+  output_base: "~/ldos_manip_tracing/traces"
+
+# ROS 2 userspace tracepoints (via ros2trace)
+ros2_events:
+  # Core ROS 2 tracepoints
+  - "ros2:rcl_init"
+  - "ros2:rcl_node_init"
+  - "ros2:rcl_publisher_init"
+  - "ros2:rcl_subscription_init"
+  - "ros2:rcl_service_init"
+  - "ros2:rcl_client_init"
+  - "ros2:rcl_timer_init"
+  - "ros2:rcl_lifecycle_state_machine_init"
+  - "ros2:rcl_lifecycle_transition"
+
+  # Callback tracing (critical for latency analysis)
+  - "ros2:rclcpp_callback_register"
+  - "ros2:callback_start"
+  - "ros2:callback_end"
+
+  # Message flow tracing
+  - "ros2:rclcpp_publish"
+  - "ros2:rcl_publish"
+  - "ros2:rclcpp_subscription_callback_added"
+  - "ros2:rclcpp_subscription_init"
+
+  # Executor tracing
+  - "ros2:rclcpp_executor_get_next_ready"
+  - "ros2:rclcpp_executor_wait_for_work"
+  - "ros2:rclcpp_executor_execute"
+
+  # Action tracing (for MoveIt goals)
+  - "ros2:rcl_action_client_init"
+  - "ros2:rcl_action_server_init"
+
+# Kernel tracepoints (for scheduler analysis)
+kernel_events:
+  - "sched_switch"
+  - "sched_wakeup"
+  - "sched_wakeup_new"
+  - "sched_process_fork"
+  - "sched_process_exit"
+  - "sched_process_exec"
+  - "sched_migrate_task"
+
+# Buffer configuration
+buffers:
+  # Per-CPU buffer size in KB
+  size_kb: 16384
+  # Number of sub-buffers
+  num_subbuf: 8
+  # Overwrite mode: discard or overwrite
+  mode: "discard"
+
+# Context fields to add to events
+context:
+  - "vpid"      # Virtual PID
+  - "vtid"      # Virtual TID
+  - "procname"  # Process name
+  - "perf:thread:cpu-cycles"
+  - "perf:thread:instructions"

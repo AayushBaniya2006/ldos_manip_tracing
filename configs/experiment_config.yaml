@@ -1,0 +1,105 @@
+# Experiment Configuration for LDOS Tracing Harness
+# All parameters for reproducible experiments
+
+experiment:
+  name: "ldos_manip_tracing"
+  version: "1.0.0"
+
+trials:
+  num_baseline: 10
+  num_cpu_load: 10
+  num_msg_load: 10
+  warmup_runs: 2  # Discarded runs before data collection
+  cooldown_seconds: 5  # Between trials
+
+benchmark:
+  # Target pose for Panda end-effector (in base_link frame)
+  goal_pose:
+    position:
+      x: 0.4
+      y: 0.2
+      z: 0.5
+    orientation:  # quaternion (w, x, y, z)
+      w: 0.0
+      x: 0.707
+      y: 0.707
+      z: 0.0
+
+  # Planning parameters
+  planning:
+    planner_id: "RRTConnect"
+    planning_time: 5.0  # seconds
+    num_planning_attempts: 3
+    max_velocity_scaling: 0.5
+    max_acceleration_scaling: 0.5
+
+  # Timeouts
+  timeouts:
+    planning_timeout: 10.0
+    execution_timeout: 30.0
+    total_timeout: 60.0
+
+load_scenarios:
+  cpu_load:
+    # stress-ng parameters
+    num_workers: 4  # Number of CPU stress workers
+    method: "cpu"   # stress-ng method
+    cpu_percent: 80  # Target CPU utilization
+
+  msg_load:
+    # Message flood parameters
+    topic: "/flood_topic"
+    msg_type: "std_msgs/msg/String"
+    rate_hz: 1000  # Messages per second
+    payload_size_bytes: 1024
+    num_publishers: 4
+
+tracing:
+  session_prefix: "ldos_trace"
+  events:
+    ros2:
+      - "ros2:*"
+    kernel:
+      - "sched_switch"
+      - "sched_wakeup"
+      - "sched_process_fork"
+      - "sched_process_exit"
+    # Optional: enable for detailed timing
+    # - "irq_handler_entry"
+    # - "irq_handler_exit"
+
+  buffer_size_kb: 16384  # 16 MB per-CPU buffer
+
+metrics:
+  # Objective metrics to extract
+  objectives:
+    T1_planning_latency:
+      description: "Time from planning request to plan received"
+      unit: "ms"
+      markers:
+        start: "planning_request_sent"
+        end: "planning_response_received"
+
+    T2_execution_latency:
+      description: "Time from execute request to motion complete"
+      unit: "ms"
+      markers:
+        start: "execute_request_sent"
+        end: "execute_complete"
+
+    T3_control_loop_jitter:
+      description: "Std dev of control loop period"
+      unit: "ms"
+      source: "controller_manager callback intervals"
+
+    T4_total_e2e_latency:
+      description: "Total time from goal sent to goal achieved"
+      unit: "ms"
+      markers:
+        start: "benchmark_goal_sent"
+        end: "benchmark_goal_achieved"
+
+    T5_sim_step_timing:
+      description: "Gazebo simulation step consistency"
+      unit: "ms"
+      source: "gz_sim world update callbacks"

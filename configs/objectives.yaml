@@ -1,0 +1,278 @@
+# objectives.yaml - End-to-End Objectives for MoveIt 2 Manipulation Stack
+# LDOS Research Project: Tracing-Driven Performance Analysis
+#
+# This file defines:
+# 1. Critical end-to-end paths in the manipulation stack
+# 2. Deadlines and criticality classifications
+# 3. Weights for multi-objective analysis
+#
+# Reference: PiCAS paper (callback chains), PAAM paper (priority assignment)
+
+version: "1.0.0"
+last_updated: "2025-01"
+
+# =============================================================================
+# END-TO-END PATH DEFINITIONS
+# =============================================================================
+
+paths:
+  P1_planning:
+    name: "Planning Path"
+    description: "From goal request to motion plan generation"
+
+    chain:
+      - node: move_group
+        callback_pattern: "goal_callback|goal_received"
+        description: "Receives MoveGroup action goal"
+      - node: move_group
+        callback_pattern: "planning_pipeline|plan_execution"
+        description: "OMPL planning execution"
+      - node: move_group
+        callback_pattern: "plan_response|result_callback"
+        description: "Returns planning result"
+
+    topics_involved:
+      - /move_action (action)
+      - /planning_scene (subscription)
+      - /joint_states (subscription)
+
+    timing:
+      deadline_type: soft
+      deadline_ms: 5000
+      typical_ms: 500
+      worst_case_ms: 5000
+
+    criticality: HIGH
+    weight: 0.7
+
+    rationale: |
+      Planning determines if motion is feasible but is not safety-critical.
+      Longer planning times delay tasks but don't cause immediate failures.
+      Weight is high because planning latency directly affects task throughput.
+
+  P2_control:
+    name: "Control Loop"
+    description: "Joint trajectory controller update cycle"
+
+    chain:
+      - node: controller_manager
+        callback_pattern: "update|control_loop"
+        description: "Controller manager update tick"
+      - node: joint_trajectory_controller
+        callback_pattern: "update_command|interpolate"
+        description: "Trajectory interpolation and command generation"
+
+    topics_involved:
+      - /joint_states (subscription)
+      - /joint_commands (publication)
+      - /follow_joint_trajectory (action)
+
+    timing:
+      deadline_type: hard
+      deadline_ms: 2  # 500 Hz control rate
+      typical_ms: 1
+      worst_case_ms: 2
+
+    criticality: CRITICAL
+    weight: 1.0
+
+    rationale: |
+      Control loop must run at consistent rate for smooth motion.
+      Missing deadlines causes jerky motion, potential safety stops,
+      and trajectory tracking errors. Highest weight as this is real-time critical.
+
+  P3_feedback:
+    name: "State Feedback Path"
+    description: "Joint state publication to TF update"
+
+    chain:
+      - node: gz_ros2_control
+        callback_pattern: "read|state_update"
+        description: "Read joint states from Gazebo"
+      - node: joint_state_broadcaster
+        callback_pattern: "publish|update"
+        description: "Broadcast joint states"
+      - node: robot_state_publisher
+        callback_pattern: "tf_callback|joint_state_callback"
+        description: "Update TF tree"
+
+    topics_involved:
+      - /joint_states (publication)
+      - /tf (publication)
+      - /tf_static (publication)
+
+    timing:
+      deadline_type: soft
+      deadline_ms: 10
+      typical_ms: 5
+      worst_case_ms: 15
+
+    criticality: HIGH
+    weight: 0.8
+
+    rationale: |
+      Accurate state feedback is needed for monitoring and planning.
+      Delays cause stale data but don't immediately affect safety.
+      High weight because MoveIt needs current state for monitoring.
+
+  P4_collision:
+    name: "Collision Checking Path"
+    description: "Planning scene update and collision queries"
+
+    chain:
+      - node: move_group
+        callback_pattern: "planning_scene|octomap"
+        description: "Planning scene updates"
+      - node: move_group
+        callback_pattern: "collision_check|fcl"
+        description: "FCL collision checking"
+
+    topics_involved:
+      - /planning_scene (subscription)
+      - /monitored_planning_scene (publication)
+
+    timing:
+      deadline_type: soft
+      deadline_ms: 50
+      typical_ms: 10
+      worst_case_ms: 100
+
+    criticality: MEDIUM
+    weight: 0.5
+
+    rationale: |
+      Collision checking is important for safety during planning,
+      but it's done before motion starts, not during execution.
+      Lower weight as it doesn't affect real-time performance.
+
+  P5_perception:
+    name: "Perception Path"
+    description: "Sensor data to planning scene update (if sensors present)"
+
+    chain:
+      - node: sensor_driver
+        callback_pattern: "image_callback|pointcloud"
+        description: "Sensor data acquisition"
+      - node: perception_node
+        callback_pattern: "process|segment"
+        description: "Perception processing"
+      - node: move_group
+        callback_pattern: "octomap_update|scene_update"
+        description: "Planning scene integration"
+
+    topics_involved:
+      - /camera/image_raw (subscription)
+      - /camera/depth/points (subscription)
+      - /planning_scene (publication)
+
+    timing:
+      deadline_type: soft
+      deadline_ms: 200
+      typical_ms: 100
+      worst_case_ms: 500
+
+    criticality: MEDIUM
+    weight: 0.3
+
+    rationale: |
+      Perception latency affects how quickly the robot responds to
+      environment changes. Lower weight for simulation-only experiments
+      where perception isn't the focus.
+
+    enabled: false  # Not used in current simulation setup
+
+# =============================================================================
+# WEIGHTING METHODOLOGY
+# =============================================================================
+
+weighting:
+  method: "criticality_based"
+
+  methods_available:
+    criticality_based:
+      description: "Weights based on criticality classification"
+      formula: "CRITICAL=1.0, HIGH=0.7-0.8, MEDIUM=0.4-0.5, LOW=0.1-0.2"
+
+    deadline_monotonic:
+      description: "Shorter deadline = higher priority (Rate Monotonic)"
+      formula: "weight = 1.0 / deadline_ms"
+
+    utilization_based:
+      description: "Based on CPU usage and criticality (from PAAM)"
+      formula: "weight = criticality * (1/deadline) * (1/cpu_usage)"
+
+    sensitivity_based:
+      description: "Based on how much metrics degrade under load"
+      formula: "weight = normalize(abs(pct_change_under_load))"
+
+  rationale: |
+    We use criticality_based weighting because:
+    1. The control loop (P2) has hard real-time requirements
+    2. Planning and feedback (P1, P3) have soft requirements
+    3. Collision checking (P4) is batch-oriented, not real-time
+    4. This aligns with ROS 2 executor priority patterns
+
+    Weights may be adjusted after running validate_weights.py
+    with empirical data from CloudLab experiments.
+
+# =============================================================================
+# VALIDATION STATUS
+# =============================================================================
+
+validation:
+  status: "pending"  # pending, validated, needs_adjustment
+
+  last_validated: null
+  baseline_dataset: null
+  load_dataset: null
+
+  notes: |
+    Run validate_weights.py after collecting CloudLab data to:
+    1. Compute sensitivity of each path to load
+    2. Verify weights align with observed behavior
+    3. Suggest adjustments if needed
+
+# =============================================================================
+# METRIC MAPPING
+# =============================================================================
+
+metrics_mapping:
+  # Maps paths to metrics from metrics_schema.py
+  P1_planning:
+    primary_metric: T1  # Planning Latency
+    secondary_metrics: [T4]  # Affects total E2E
+
+  P2_control:
+    primary_metric: T3  # Control Loop Jitter
+    secondary_metrics: [T2]  # Execution Latency
+
+  P3_feedback:
+    primary_metric: T3  # Jitter affects feedback
+    secondary_metrics: []
+
+  P4_collision:
+    primary_metric: T1  # Part of planning
+    secondary_metrics: []
+
+# =============================================================================
+# THRESHOLDS FOR BREAKING POINT ANALYSIS
+# =============================================================================
+
+thresholds:
+  # Success rate thresholds
+  success_rate:
+    acceptable: 0.95  # 95% success rate
+    warning: 0.90     # 90% - investigate
+    critical: 0.80    # 80% - system is breaking
+
+  # Latency thresholds (multiplier over typical)
+  latency_degradation:
+    acceptable: 1.5   # Up to 50% increase OK
+    warning: 2.0      # 2x typical - investigate
+    critical: 3.0     # 3x typical - system stressed
+
+  # Jitter thresholds
+  jitter:
+    acceptable_ms: 0.5
+    warning_ms: 1.0
+    critical_ms: 2.0  # Missing control deadlines

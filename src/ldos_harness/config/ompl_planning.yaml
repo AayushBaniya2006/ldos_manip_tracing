@@ -1,0 +1,54 @@
+# OMPL Planning Configuration for Panda arm
+
+planning_plugin: ompl_interface/OMPLPlanner
+
+request_adapters: >-
+  default_planner_request_adapters/AddTimeOptimalParameterization
+  default_planner_request_adapters/ResolveConstraintFrames
+  default_planner_request_adapters/FixWorkspaceBounds
+  default_planner_request_adapters/FixStartStateBounds
+  default_planner_request_adapters/FixStartStateCollision
+  default_planner_request_adapters/FixStartStatePathConstraints
+
+start_state_max_bounds_error: 0.1
+
+panda_arm:
+  default_planner_config: RRTConnect
+  planner_configs:
+    - RRTConnect
+    - RRT
+    - PRM
+    - TRRT
+    - LazyPRMstar
+
+  # RRTConnect configuration
+  RRTConnect:
+    type: geometric::RRTConnect
+    range: 0.0  # Max distance between states (0 = auto)
+
+  # RRT configuration
+  RRT:
+    type: geometric::RRT
+    range: 0.0
+    goal_bias: 0.05
+
+  # PRM configuration
+  PRM:
+    type: geometric::PRM
+    max_nearest_neighbors: 10
+
+  # TRRT configuration
+  TRRT:
+    type: geometric::TRRT
+    range: 0.0
+    goal_bias: 0.05
+    max_states_failed: 10
+    temp_change_factor: 2.0
+    min_temperature: 1e-10
+    init_temperature: 1e-6
+    frontier_threshold: 0.0
+    frontier_node_ratio: 0.1
+
+  # LazyPRMstar configuration
+  LazyPRMstar:
+    type: geometric::LazyPRMstar

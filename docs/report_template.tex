@@ -1,0 +1,452 @@
+% =============================================================================
+% LDOS Research Report Template
+% Tracing-Driven Performance Analysis for ROS 2 Manipulation Stacks
+% =============================================================================
+
+\documentclass[11pt,a4paper]{article}
+
+% =============================================================================
+% PACKAGES
+% =============================================================================
+
+% Layout and formatting
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{parskip}
+
+% Math and symbols
+\usepackage{amsmath,amssymb,amsfonts}
+
+% Graphics and figures
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{tikz}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{longtable}
+\usepackage{tabularx}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+% References and links
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+% Bibliography
+\usepackage[backend=biber,style=ieee]{biblatex}
+% \addbibresource{references.bib}
+
+% =============================================================================
+% CONFIGURATION
+% =============================================================================
+
+% Colors
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+% Code listing style
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{blue},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+% Hyperref configuration
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    citecolor=green,
+    pdftitle={LDOS Research Report},
+    pdfauthor={Author Name}
+}
+
+% Custom commands
+\newcommand{\ros}{ROS~2\xspace}
+\newcommand{\moveit}{MoveIt~2\xspace}
+\newcommand{\gazebo}{Gazebo\xspace}
+
+% =============================================================================
+% DOCUMENT
+% =============================================================================
+
+\begin{document}
+
+% -----------------------------------------------------------------------------
+% Title Page
+% -----------------------------------------------------------------------------
+
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+
+    {\LARGE\bfseries Tracing-Driven Performance Analysis for\\ROS 2 Manipulation Stacks\par}
+
+    \vspace{1.5cm}
+
+    {\Large Undergraduate Research Project\par}
+
+    \vspace{2cm}
+
+    {\large
+        \textbf{Author:} Your Name\\[0.3cm]
+        \textbf{Mentor:} Rohit Dwivedula\\[0.3cm]
+        \textbf{Institution:} Your University\\[0.3cm]
+    }
+
+    \vspace{2cm}
+
+    {\large \today\par}
+
+    \vfill
+
+    % Optional: Add university logo
+    % \includegraphics[width=0.3\textwidth]{logo.png}
+
+\end{titlepage}
+
+% -----------------------------------------------------------------------------
+% Abstract
+% -----------------------------------------------------------------------------
+
+\begin{abstract}
+This report presents a comprehensive performance analysis of \ros manipulation stacks under various load conditions using low-overhead tracing. We developed an automated experiment harness that combines LTTng-based tracing with controlled load generation to characterize end-to-end latencies in motion planning and execution pipelines.
+
+Our experiments on CloudLab bare-metal nodes reveal [key findings]. We identify critical callback chains that become bottlenecks under CPU stress and message flooding scenarios. Statistical analysis using [methods] demonstrates significant latency increases of [X\%] under [conditions].
+
+The results provide actionable insights for optimizing real-time performance in robotic manipulation systems and establish a reproducible methodology for timing analysis in \ros applications.
+
+\textbf{Keywords:} ROS 2, performance analysis, tracing, manipulation, MoveIt, real-time systems
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% -----------------------------------------------------------------------------
+% Introduction
+% -----------------------------------------------------------------------------
+
+\section{Introduction}
+\label{sec:introduction}
+
+\subsection{Motivation}
+
+Robotic manipulation systems require predictable timing behavior for safe and effective operation. The \ros ecosystem provides powerful tools for building complex robotic applications, but understanding end-to-end latencies in these systems remains challenging.
+
+\subsection{Research Questions}
+
+This work addresses the following research questions:
+
+\begin{enumerate}
+    \item How do end-to-end latencies in \ros manipulation stacks vary under different load conditions?
+    \item Which callback chains are most sensitive to CPU and message load?
+    \item What are the breaking points beyond which the system fails to meet timing requirements?
+\end{enumerate}
+
+\subsection{Contributions}
+
+The main contributions of this work are:
+
+\begin{itemize}
+    \item An automated experiment harness for reproducible performance analysis
+    \item Comprehensive latency characterization under baseline and load scenarios
+    \item Identification of bottleneck callbacks and critical paths
+    \item Statistical validation of performance degradation patterns
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+% Background
+% -----------------------------------------------------------------------------
+
+\section{Background}
+\label{sec:background}
+
+\subsection{ROS 2 Architecture}
+
+\ros is a middleware framework for robotics that provides...
+
+\subsection{MoveIt 2}
+
+\moveit is the primary motion planning framework for \ros...
+
+\subsection{LTTng Tracing}
+
+LTTng (Linux Trace Toolkit: next generation) provides low-overhead tracing...
+
+\subsection{Related Work}
+
+% Cite PiCAS, PAAM, and other relevant papers
+Previous work on \ros performance analysis includes...
+
+% -----------------------------------------------------------------------------
+% Methodology
+% -----------------------------------------------------------------------------
+
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{Experiment Setup}
+
+% Include hardware table
+\input{analysis/output/hardware_info.tex}
+
+\subsubsection{Software Configuration}
+
+\begin{itemize}
+    \item \textbf{ROS 2 Distribution:} Jazzy Jalisco
+    \item \textbf{Simulator:} Gazebo Harmonic (gz-sim8)
+    \item \textbf{Robot:} Franka Emika Panda
+    \item \textbf{Tracing:} LTTng via ros2\_tracing
+\end{itemize}
+
+\subsection{Experiment Design}
+
+\subsubsection{Scenarios}
+
+We evaluate three scenarios:
+
+\begin{enumerate}
+    \item \textbf{Baseline:} No artificial load
+    \item \textbf{CPU Load:} stress-ng with varying intensity
+    \item \textbf{Message Load:} High-frequency publishers
+\end{enumerate}
+
+\subsubsection{Metrics}
+
+We measure the following metrics:
+
+\begin{itemize}
+    \item \textbf{T1:} Planning latency (goal to trajectory)
+    \item \textbf{T2:} Execution latency (trajectory to completion)
+    \item \textbf{T3:} Total end-to-end latency
+    \item \textbf{T4:} Control loop jitter
+    \item \textbf{T5:} State feedback delay
+\end{itemize}
+
+\subsection{Data Collection}
+
+Each experiment trial follows this protocol:
+
+\begin{enumerate}
+    \item Start tracing session
+    \item Apply load condition
+    \item Execute pick-and-place task
+    \item Stop tracing
+    \item Extract and analyze traces
+\end{enumerate}
+
+% -----------------------------------------------------------------------------
+% Results
+% -----------------------------------------------------------------------------
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Baseline Performance}
+
+% Include generated tables
+% \input{analysis/output/tables/baseline_summary.tex}
+
+\begin{table}[htbp]
+\centering
+\caption{Baseline Latency Statistics}
+\label{tab:baseline}
+\begin{tabular}{lrrrrr}
+\toprule
+Metric & Mean (ms) & Std (ms) & P95 (ms) & P99 (ms) & Max (ms) \\
+\midrule
+Planning (T1) & -- & -- & -- & -- & -- \\
+Execution (T2) & -- & -- & -- & -- & -- \\
+Total (T3) & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Load Impact Analysis}
+
+\subsubsection{CPU Load Effects}
+
+% Include generated figures
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=0.8\textwidth]{analysis/output/plots/cpu_sweep.png}
+    \caption{Latency vs CPU Load Percentage}
+    \label{fig:cpu_sweep}
+\end{figure}
+
+\subsubsection{Message Load Effects}
+
+% Similar structure for message load results
+
+\subsection{Statistical Analysis}
+
+% Include statistical comparison table
+% \input{analysis/output/stats/stat_comparison.tex}
+
+\begin{table}[htbp]
+\centering
+\caption{Statistical Comparison vs Baseline}
+\label{tab:stats}
+\begin{tabular}{lrrrr}
+\toprule
+Scenario & Change (\%) & t-statistic & p-value & Cohen's d \\
+\midrule
+CPU Load (50\%) & -- & -- & -- & -- \\
+CPU Load (75\%) & -- & -- & -- & -- \\
+Message Load & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Breaking Point Analysis}
+
+% Results from find_breaking_point.py
+
+\subsection{Callback Chain Analysis}
+
+% Results from e2e_path_analyzer.py
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=0.9\textwidth]{analysis/output/paths/callback_heatmap.png}
+    \caption{Callback Contribution Heatmap}
+    \label{fig:callback_heatmap}
+\end{figure}
+
+% -----------------------------------------------------------------------------
+% Discussion
+% -----------------------------------------------------------------------------
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Key Findings}
+
+\begin{enumerate}
+    \item Finding 1: ...
+    \item Finding 2: ...
+    \item Finding 3: ...
+\end{enumerate}
+
+\subsection{Implications}
+
+The results have several implications for \ros system design...
+
+\subsection{Limitations}
+
+This study has the following limitations:
+
+\begin{itemize}
+    \item Simulation-only experiments
+    \item Single robot platform
+    \item Limited load configurations tested
+\end{itemize}
+
+\subsection{Future Work}
+
+Future research directions include:
+
+\begin{itemize}
+    \item Real hardware validation
+    \item Multi-robot scenarios
+    \item Adaptive load balancing strategies
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+% Conclusion
+% -----------------------------------------------------------------------------
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This work presented a comprehensive performance analysis of \ros manipulation stacks...
+
+% -----------------------------------------------------------------------------
+% Acknowledgments
+% -----------------------------------------------------------------------------
+
+\section*{Acknowledgments}
+
+We thank [acknowledgments]. CloudLab resources were provided by [details].
+
+% -----------------------------------------------------------------------------
+% References
+% -----------------------------------------------------------------------------
+
+% \printbibliography
+
+\begin{thebibliography}{9}
+
+\bibitem{picas}
+H. Choi et al., ``PiCAS: New Design of Priority-Driven Chain-Aware Scheduling for ROS2,'' \textit{RTAS}, 2021.
+
+\bibitem{paam}
+D. Casini et al., ``Response-Time Analysis of ROS 2 Processing Chains Under Reservation-Based Scheduling,'' \textit{ECRTS}, 2019.
+
+\bibitem{ros2tracing}
+C. Bedard et al., ``ros2\_tracing: Multipurpose Low-Overhead Framework for Real-Time Tracing of ROS 2,'' \textit{IEEE RA-L}, 2022.
+
+\bibitem{moveit}
+D. Coleman et al., ``Reducing the Barrier to Entry of Complex Robotic Software: a MoveIt! Case Study,'' \textit{J. Software Eng. Robotics}, 2014.
+
+\end{thebibliography}
+
+% -----------------------------------------------------------------------------
+% Appendix
+% -----------------------------------------------------------------------------
+
+\appendix
+
+\section{Experiment Configuration}
+\label{app:config}
+
+\begin{lstlisting}[language=yaml,caption={experiment\_config.yaml}]
+experiment:
+  num_trials: 30
+  scenario: baseline
+
+benchmark:
+  task: pick_and_place
+  timeout_s: 300
+
+tracing:
+  enabled: true
+  session_name: ldos_trace
+  events:
+    - ros2:callback_start
+    - ros2:callback_end
+\end{lstlisting}
+
+\section{Additional Figures}
+\label{app:figures}
+
+% Additional figures and tables
+
+\section{Raw Data}
+\label{app:data}
+
+Complete experimental data is available at: \url{https://github.com/[repo]}
+
+\end{document}
