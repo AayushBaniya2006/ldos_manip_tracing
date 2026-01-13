@@ -14,25 +14,44 @@ SMOKE_TRIALS ?= 1
 ROS_SETUP := source /opt/ros/jazzy/setup.bash 2>/dev/null || true; \
              source $(WS_ROOT)/install/setup.bash 2>/dev/null || true
 
-.PHONY: all setup build clean smoke_test \
+.PHONY: all bootstrap setup build clean smoke_test \
         run_baseline run_cpu_load run_msg_load run_all \
         analyze_all report help \
         sweep_cpu sweep_msg find_breaking \
         analyze_paths validate_weights hardware_info \
-        jupyter full_report
+        jupyter full_report check_deps
 
 # Default target
 all: help
 
 #------------------------------------------------------------------------------
+# Bootstrap (Fresh CloudLab Node)
+#------------------------------------------------------------------------------
+
+## Bootstrap fresh CloudLab/Ubuntu 24.04 node (installs ALL dependencies)
+bootstrap:
+	@echo "=== Bootstrapping CloudLab Node ==="
+	@echo "This installs ROS 2, Gazebo, MoveIt, LTTng, and all dependencies."
+	@echo "Runtime: ~15-25 minutes"
+	@echo ""
+	chmod +x scripts/*.sh
+	./scripts/bootstrap_cloudlab.sh
+
+## Check if all dependencies are installed
+check_deps:
+	@echo "=== Checking Dependencies ==="
+	chmod +x scripts/*.sh
+	./scripts/setup_workspace.sh --check
+
+#------------------------------------------------------------------------------
 # Setup and Build
 #------------------------------------------------------------------------------
 
-## Setup workspace (run once after clone)
+## Setup workspace (run after bootstrap or if deps already installed)
 setup:
 	@echo "=== Setting up LDOS harness ==="
 	chmod +x scripts/*.sh
-	chmod +x src/ldos_harness/scripts/*.py
+	chmod +x src/ldos_harness/scripts/*.py 2>/dev/null || true
 	./scripts/setup_workspace.sh
 
 ## Build the ROS 2 workspace
@@ -265,8 +284,12 @@ help:
 	@echo ""
 	@echo "Usage: make <target> [NUM_TRIALS=N]"
 	@echo ""
+	@echo "First-Time Setup (Fresh CloudLab Node):"
+	@echo "  bootstrap      - Install ALL dependencies (~15-25 min)"
+	@echo "  check_deps     - Verify all dependencies installed"
+	@echo ""
 	@echo "Setup & Build:"
-	@echo "  setup          - Initial workspace setup (run once)"
+	@echo "  setup          - Setup workspace (after bootstrap)"
 	@echo "  build          - Build ROS 2 packages"
 	@echo "  clean          - Remove build artifacts"
 	@echo ""
@@ -297,9 +320,14 @@ help:
 	@echo "  jupyter        - Launch Jupyter notebook server"
 	@echo "  full_report    - Generate complete PDF report"
 	@echo ""
+	@echo "Quick Start (Fresh CloudLab):"
+	@echo "  make bootstrap           # Install everything (~20 min)"
+	@echo "  # Log out and back in    # For tracing group"
+	@echo "  make smoke_test          # Verify it works"
+	@echo "  make run_all             # Run experiments"
+	@echo ""
 	@echo "Examples:"
-	@echo "  make smoke_test              # Quick validation"
-	@echo "  make run_all NUM_TRIALS=30   # Full experiment suite"
-	@echo "  make analyze_all report      # Analyze and report"
-	@echo "  make sweep_cpu NUM_TRIALS=20 # CPU parameter sweep"
-	@echo "  make full_report             # Generate PDF report"
+	@echo "  make bootstrap              # First-time setup"
+	@echo "  make smoke_test             # Quick validation"
+	@echo "  make run_all NUM_TRIALS=30  # Full experiment suite"
+	@echo "  make analyze_all report     # Analyze and report"

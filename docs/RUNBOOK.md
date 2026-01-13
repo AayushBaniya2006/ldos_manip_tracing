@@ -4,6 +4,42 @@ Step-by-step commands for running experiments. All commands are copy/paste ready
 
 ---
 
+## Fresh CloudLab Node Setup (First Time Only)
+
+**This is all you need for a fresh Ubuntu 24.04 CloudLab node:**
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/AayushBaniya2006/ldos_manip_tracing.git
+cd ldos_manip_tracing
+
+# 2. Run bootstrap (installs EVERYTHING automatically - ~15-25 min)
+make bootstrap
+
+# 3. IMPORTANT: Log out and back in for tracing group
+exit
+# SSH back in
+
+# 4. Verify and run smoke test
+cd ldos_manip_tracing
+source ~/.bashrc
+make smoke_test
+
+# 5. Run experiments
+make run_all NUM_TRIALS=10
+```
+
+That's it! The bootstrap script handles:
+- ROS 2 Jazzy installation
+- Gazebo Harmonic installation
+- MoveIt 2, ros2_control, ros_gz packages
+- LTTng tracing setup
+- Python analysis dependencies
+- stress-ng for load testing
+- Building the workspace
+
+---
+
 ## Prerequisites Checklist
 
 Run these checks before any experiment:
