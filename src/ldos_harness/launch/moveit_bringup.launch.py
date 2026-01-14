@@ -18,6 +18,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -41,28 +42,34 @@ def launch_setup(context, *args, **kwargs):
     pkg_ldos_harness = get_package_share_directory("ldos_harness")
 
     # Robot description (must match sim_bringup)
-    robot_description_content = Command(
-        [
-            PathJoinSubstitution([FindExecutable(name="xacro")]),
-            " ",
-            PathJoinSubstitution(
-                [pkg_ldos_harness, "config", "panda_gz.urdf.xacro"]
-            ),
-            " ",
-            "use_sim_time:=true",
-        ]
+    robot_description_content = ParameterValue(
+        Command(
+            [
+                PathJoinSubstitution([FindExecutable(name="xacro")]),
+                " ",
+                PathJoinSubstitution(
+                    [pkg_ldos_harness, "config", "panda_gz.urdf.xacro"]
+                ),
+                " ",
+                "use_sim_time:=true",
+            ]
+        ),
+        value_type=str,
     )
     robot_description = {"robot_description": robot_description_content}
 
     # SRDF for MoveIt
-    robot_description_semantic_content = Command(
-        [
-            PathJoinSubstitution([FindExecutable(name="xacro")]),
-            " ",
-            PathJoinSubstitution(
-                [pkg_ldos_harness, "config", "panda.srdf.xacro"]
-            ),
-        ]
+    robot_description_semantic_content = ParameterValue(
+        Command(
+            [
+                PathJoinSubstitution([FindExecutable(name="xacro")]),
+                " ",
+                PathJoinSubstitution(
+                    [pkg_ldos_harness, "config", "panda.srdf.xacro"]
+                ),
+            ]
+        ),
+        value_type=str,
     )
     robot_description_semantic = {
         "robot_description_semantic": robot_description_semantic_content
