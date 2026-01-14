@@ -21,7 +21,6 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
-from moveit_configs_utils import MoveItConfigsBuilder
 
 
 def load_yaml(package_name, file_path):
@@ -75,7 +74,7 @@ def launch_setup(context, *args, **kwargs):
         "robot_description_semantic": robot_description_semantic_content
     }
 
-    # Kinematics configuration
+    # Kinematics configuration (loaded from YAML for proper typing)
     kinematics_yaml = load_yaml("ldos_harness", "config/kinematics.yaml")
     if kinematics_yaml is None:
         kinematics_yaml = {
@@ -86,78 +85,15 @@ def launch_setup(context, *args, **kwargs):
             }
         }
 
-    # Planning configuration - MoveIt 2 Jazzy structure
-    # Parameters must be under planning_pipelines structure
-    ompl_planning_yaml_raw = load_yaml("ldos_harness", "config/ompl_planning.yaml")
-    if ompl_planning_yaml_raw is None:
-        ompl_planning_yaml_raw = {
-            "planning_plugin": "ompl_interface/OMPLPlanner",
-            "request_adapters": "default_planner_request_adapters/AddTimeOptimalParameterization default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/FixStartStatePathConstraints",
-            "start_state_max_bounds_error": 0.1,
+    # MoveIt configuration (loaded from YAML to ensure proper string_array typing)
+    # This includes planning_pipelines, trajectory execution, controllers, etc.
+    moveit_config_yaml = load_yaml("ldos_harness", "config/moveit.yaml")
+    if moveit_config_yaml is None:
+        # Fallback config - should not happen if package is built correctly
+        moveit_config_yaml = {
+            "planning_pipelines": ["ompl"],
+            "default_planning_pipeline": "ompl",
         }
-
-    # Wrap in proper MoveIt 2 planning pipeline structure
-    ompl_planning_yaml = {
-        "planning_pipelines": ["ompl"],
-        "default_planning_pipeline": "ompl",
-        "ompl": ompl_planning_yaml_raw,
-    }
-
-    # Joint limits
-    joint_limits_yaml = {
-        "robot_description_planning": {
-            "joint_limits": {
-                "panda_joint1": {"has_velocity_limits": True, "max_velocity": 2.175},
-                "panda_joint2": {"has_velocity_limits": True, "max_velocity": 2.175},
-                "panda_joint3": {"has_velocity_limits": True, "max_velocity": 2.175},
-                "panda_joint4": {"has_velocity_limits": True, "max_velocity": 2.175},
-                "panda_joint5": {"has_velocity_limits": True, "max_velocity": 2.610},
-                "panda_joint6": {"has_velocity_limits": True, "max_velocity": 2.610},
-                "panda_joint7": {"has_velocity_limits": True, "max_velocity": 2.610},
-            }
-        }
-    }
-
-    # Trajectory execution
-    trajectory_execution = {
-        "moveit_manage_controllers": False,
-        "trajectory_execution.allowed_execution_duration_scaling": 1.2,
-        "trajectory_execution.allowed_goal_duration_margin": 0.5,
-        "trajectory_execution.allowed_start_tolerance": 0.01,
-    }
-
-    # Controller configuration for MoveIt
-    moveit_controllers = {
-        "moveit_simple_controller_manager": {
-            "controller_names": ["panda_arm_controller", "panda_hand_controller"],
-        },
-        "panda_arm_controller": {
-            "type": "FollowJointTrajectory",
-            "action_ns": "follow_joint_trajectory",
-            "joints": [
-                "panda_joint1",
-                "panda_joint2",
-                "panda_joint3",
-                "panda_joint4",
-                "panda_joint5",
-                "panda_joint6",
-                "panda_joint7",
-            ],
-        },
-        "panda_hand_controller": {
-            "type": "GripperCommand",
-            "action_ns": "gripper_cmd",
-            "joints": ["panda_finger_joint1"],
-        },
-    }
-
-    # Planning scene monitor
-    planning_scene_monitor_parameters = {
-        "publish_planning_scene": True,
-        "publish_geometry_updates": True,
-        "publish_state_updates": True,
-        "publish_transforms_updates": True,
-    }
 
     # Move group node
     move_group_node = Node(
@@ -168,11 +104,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
             kinematics_yaml,
-            ompl_planning_yaml,
-            trajectory_execution,
-            moveit_controllers,
-            planning_scene_monitor_parameters,
-            joint_limits_yaml,
+            moveit_config_yaml,
             {"use_sim_time": True},
         ],
     )
