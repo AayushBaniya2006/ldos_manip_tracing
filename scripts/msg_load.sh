@@ -19,13 +19,15 @@ NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[MSG_LOAD]${NC} $1"; }
 
-# Source ROS
+# Source ROS (disable -u temporarily for ROS setup scripts)
+set +u
 if [ -f /opt/ros/jazzy/setup.bash ]; then
     source /opt/ros/jazzy/setup.bash
 fi
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
 fi
+set -u
 
 log_info "Starting $NUM_PUBS message flood publishers at ${RATE_HZ} Hz each"
 log_info "Duration: ${DURATION}s"

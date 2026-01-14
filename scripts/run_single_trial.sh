@@ -72,13 +72,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Source ROS
+# Source ROS (disable -u temporarily for ROS setup scripts)
+set +u
 if [ -f /opt/ros/jazzy/setup.bash ]; then
     source /opt/ros/jazzy/setup.bash
 fi
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
 fi
+set -u
 
 log_section "Trial: $TRIAL_ID"
 log_info "Scenario: $SCENARIO"

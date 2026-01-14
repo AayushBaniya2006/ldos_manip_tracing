@@ -233,8 +233,10 @@ phase3_gazebo_install() {
 phase4_ros2_packages() {
     log_step "=== PHASE 4: ROS 2 Packages Installation ==="
 
-    # Source ROS 2 for package checks
+    # Source ROS 2 for package checks (disable -u temporarily for ROS setup scripts)
+    set +u
     source /opt/ros/${ROS_DISTRO}/setup.bash
+    set -u
 
     log_info "Installing MoveIt 2..."
     apt_install \
@@ -422,8 +424,10 @@ export LTTNG_HOME=~/.lttng
 EOF
     fi
 
-    # Source ROS 2 for current session
+    # Source ROS 2 for current session (disable -u temporarily for ROS setup scripts)
+    set +u
     source /opt/ros/${ROS_DISTRO}/setup.bash
+    set -u
     export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
     log_info "Phase 8 complete."
@@ -436,8 +440,10 @@ EOF
 phase9_build_workspace() {
     log_step "=== PHASE 9: Building LDOS Harness Workspace ==="
 
-    # Source ROS 2
+    # Source ROS 2 (disable -u temporarily for ROS setup scripts)
+    set +u
     source /opt/ros/${ROS_DISTRO}/setup.bash
+    set -u
 
     cd "$WS_ROOT"
 
@@ -476,8 +482,11 @@ phase9_build_workspace() {
 phase10_verify() {
     log_step "=== PHASE 10: Installation Verification ==="
 
+    # Source ROS 2 (disable -u temporarily for ROS setup scripts)
+    set +u
     source /opt/ros/${ROS_DISTRO}/setup.bash
     source "${WS_ROOT}/install/setup.bash" 2>/dev/null || true
+    set -u
 
     PASS=0
     FAIL=0

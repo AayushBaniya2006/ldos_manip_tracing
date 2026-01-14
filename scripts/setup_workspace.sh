@@ -79,7 +79,10 @@ check_needs_bootstrap() {
 setup_ros_env() {
     if [ -z "${ROS_DISTRO:-}" ]; then
         log_info "Sourcing ROS 2 Jazzy..."
+        # Disable -u temporarily for ROS setup scripts (they use unbound variables)
+        set +u
         source /opt/ros/jazzy/setup.bash
+        set -u
     fi
 
     if [ "$ROS_DISTRO" != "jazzy" ]; then

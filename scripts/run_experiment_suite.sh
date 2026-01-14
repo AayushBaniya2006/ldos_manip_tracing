@@ -32,13 +32,15 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_section() { echo -e "\n${CYAN}======================================${NC}"; echo -e "${CYAN}=== $1 ===${NC}"; echo -e "${CYAN}======================================${NC}"; }
 
-# Source ROS
+# Source ROS (disable -u temporarily for ROS setup scripts)
+set +u
 if [ -f /opt/ros/jazzy/setup.bash ]; then
     source /opt/ros/jazzy/setup.bash
 fi
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
 fi
+set -u
 
 log_section "LDOS Experiment Suite"
 log_info "Trials per scenario: $NUM_TRIALS"
