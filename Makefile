@@ -16,14 +16,22 @@ PYTHON := $(VENV_DIR)/bin/python3
 PIP := $(VENV_DIR)/bin/pip
 
 # ROS setup - dynamic detection (supports jazzy, humble, iron, rolling)
-ROS_SETUP := for d in jazzy humble iron rolling; do \
+# Note: set +u required because ROS setup scripts use unset variables
+ROS_SETUP := set +u; \
+             for d in jazzy humble iron rolling; do \
                if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
              done; \
-             source $(WS_ROOT)/install/setup.bash 2>/dev/null || true
+             source $(WS_ROOT)/install/setup.bash 2>/dev/null || true; \
+             set -u
 
 # Combined environment setup (ROS + venv)
-ENV_SETUP := $(ROS_SETUP); \
-             if [ -f "$(VENV_DIR)/bin/activate" ]; then source "$(VENV_DIR)/bin/activate"; fi
+ENV_SETUP := set +u; \
+             for d in jazzy humble iron rolling; do \
+               if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
+             done; \
+             source $(WS_ROOT)/install/setup.bash 2>/dev/null || true; \
+             if [ -f "$(VENV_DIR)/bin/activate" ]; then source "$(VENV_DIR)/bin/activate"; fi; \
+             set -u
 
 .PHONY: all bootstrap setup build clean smoke_test \
         run_baseline run_cpu_load run_msg_load run_all \
