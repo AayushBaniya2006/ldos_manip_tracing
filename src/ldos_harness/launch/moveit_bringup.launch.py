@@ -86,18 +86,22 @@ def launch_setup(context, *args, **kwargs):
             }
         }
 
-    # Planning configuration
-    ompl_planning_yaml = load_yaml("ldos_harness", "config/ompl_planning.yaml")
-    if ompl_planning_yaml is None:
-        ompl_planning_yaml = {
+    # Planning configuration - MoveIt 2 Jazzy structure
+    # Parameters must be under planning_pipelines structure
+    ompl_planning_yaml_raw = load_yaml("ldos_harness", "config/ompl_planning.yaml")
+    if ompl_planning_yaml_raw is None:
+        ompl_planning_yaml_raw = {
             "planning_plugin": "ompl_interface/OMPLPlanner",
-            "request_adapters": """default_planner_request_adapters/AddTimeOptimalParameterization default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/FixStartStatePathConstraints""",
+            "request_adapters": "default_planner_request_adapters/AddTimeOptimalParameterization default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/FixStartStatePathConstraints",
             "start_state_max_bounds_error": 0.1,
-            "panda_arm": {
-                "default_planner_config": "RRTConnect",
-                "planner_configs": ["RRTConnect", "RRT", "PRM"],
-            },
         }
+
+    # Wrap in proper MoveIt 2 planning pipeline structure
+    ompl_planning_yaml = {
+        "planning_pipelines": ["ompl"],
+        "default_planning_pipeline": "ompl",
+        "ompl": ompl_planning_yaml_raw,
+    }
 
     # Joint limits
     joint_limits_yaml = {
