@@ -14,6 +14,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    LogInfo,
     RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
@@ -126,14 +127,39 @@ def generate_launch_description():
         parameters=[robot_description, {"use_sim_time": use_sim_time}],
     )
 
+    # Environment variables for headless operation
+    # QT_QPA_PLATFORM=offscreen prevents Qt from trying to connect to X11
+    set_qt_platform = SetEnvironmentVariable(
+        name="QT_QPA_PLATFORM",
+        value="offscreen",
+        condition=IfCondition(headless),
+    )
+
+    # Unset DISPLAY to prevent any X11 connection attempts in headless mode
+    unset_display = SetEnvironmentVariable(
+        name="DISPLAY",
+        value="",
+        condition=IfCondition(headless),
+    )
+
+    # Log headless mode status
+    log_headless = LogInfo(
+        msg=["Gazebo headless mode: ", headless],
+    )
+
     # Gazebo Harmonic launch
-    gz_args = ["-r"]  # -r for running immediately
+    # When headless=true: use -s (server only) + --headless-rendering
+    # When headless=false: just -r (run immediately with GUI)
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, "launch", "gz_sim.launch.py")
         ),
         launch_arguments={
-            "gz_args": " ".join(gz_args) + " empty.sdf",
+            "gz_args": PythonExpression([
+                "'-s --headless-rendering -r empty.sdf' if '",
+                headless,
+                "' == 'true' else '-r empty.sdf'"
+            ]),
             "on_exit_shutdown": "true",
         }.items(),
     )
@@ -213,6 +239,10 @@ def generate_launch_description():
     return LaunchDescription(
         declared_arguments
         + [
+            # Set environment variables for headless operation (before Gazebo starts)
+            set_qt_platform,
+            unset_display,
+            log_headless,
             # Set plugin path before starting Gazebo
             set_gz_plugin_path,
             robot_state_publisher,
