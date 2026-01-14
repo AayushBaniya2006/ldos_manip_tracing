@@ -75,6 +75,9 @@ trap cleanup EXIT INT TERM
 
 # Source ROS environment
 source_ros() {
+    # Disable -u temporarily - ROS setup scripts use unset variables
+    set +u
+
     local ros_found=false
     for distro in jazzy humble iron rolling; do
         if [[ -f "/opt/ros/${distro}/setup.bash" ]]; then
@@ -86,6 +89,7 @@ source_ros() {
     done
 
     if [[ "$ros_found" = false ]]; then
+        set -u
         log_error "ROS 2 installation not found in /opt/ros/"
         exit 1
     fi
@@ -93,6 +97,7 @@ source_ros() {
     if [[ -f "$WS_ROOT/install/setup.bash" ]]; then
         source "$WS_ROOT/install/setup.bash"
     else
+        set -u
         log_error "Workspace not built. Run 'make setup' first."
         exit 1
     fi
@@ -101,6 +106,9 @@ source_ros() {
     if [[ -f "$WS_ROOT/.venv/bin/activate" ]]; then
         source "$WS_ROOT/.venv/bin/activate"
     fi
+
+    # Re-enable -u
+    set -u
 }
 
 # Main test function
