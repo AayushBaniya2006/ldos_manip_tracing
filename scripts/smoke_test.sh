@@ -17,8 +17,9 @@ WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Configurable parameters
 MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
-INIT_WAIT="${INIT_WAIT:-25}"
-STACK_TIMEOUT="${STACK_TIMEOUT:-50}"
+# INIT_WAIT must be > moveit_delay (25s) + MoveIt init time (~10s)
+INIT_WAIT="${INIT_WAIT:-40}"
+STACK_TIMEOUT="${STACK_TIMEOUT:-60}"
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-30}"
 
 # Colors for output

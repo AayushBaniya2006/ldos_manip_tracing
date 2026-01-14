@@ -8,98 +8,101 @@
 # - AddTimeOptimalParameterization moved to response_adapters
 # - response_adapters section is now required
 
-# Planning pipeline configuration
-planning_pipelines:
-  - ompl
-default_planning_pipeline: ompl
+# ROS 2 parameter file format: /** applies to all nodes
+/**:
+  ros__parameters:
+    # Planning pipeline configuration
+    planning_pipelines:
+      - ompl
+    default_planning_pipeline: ompl
 
-# OMPL pipeline configuration (MoveIt 2 Jazzy format)
-ompl:
-  # MUST be array (planning_plugins not planning_plugin)
-  planning_plugins:
-    - ompl_interface/OMPLPlanner
+    # OMPL pipeline configuration (MoveIt 2 Jazzy format)
+    ompl:
+      # MUST be array (planning_plugins not planning_plugin)
+      planning_plugins:
+        - ompl_interface/OMPLPlanner
 
-  # Request adapters (pre-processing) - note "planning" not "planner"
-  request_adapters:
-    - default_planning_request_adapters/ResolveConstraintFrames
-    - default_planning_request_adapters/ValidateWorkspaceBounds
-    - default_planning_request_adapters/CheckStartStateBounds
-    - default_planning_request_adapters/CheckStartStateCollision
+      # Request adapters (pre-processing) - note "planning" not "planner"
+      request_adapters:
+        - default_planning_request_adapters/ResolveConstraintFrames
+        - default_planning_request_adapters/ValidateWorkspaceBounds
+        - default_planning_request_adapters/CheckStartStateBounds
+        - default_planning_request_adapters/CheckStartStateCollision
 
-  # Response adapters (post-processing) - NEW in Jazzy
-  response_adapters:
-    - default_planning_response_adapters/AddTimeOptimalParameterization
-    - default_planning_response_adapters/ValidateSolution
-    - default_planning_response_adapters/DisplayMotionPath
+      # Response adapters (post-processing) - NEW in Jazzy
+      response_adapters:
+        - default_planning_response_adapters/AddTimeOptimalParameterization
+        - default_planning_response_adapters/ValidateSolution
+        - default_planning_response_adapters/DisplayMotionPath
 
-  start_state_max_bounds_error: 0.1
+      start_state_max_bounds_error: 0.1
 
-# Kinematics configuration (robot_description_kinematics namespace)
-robot_description_kinematics:
-  panda_arm:
-    kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
-    kinematics_solver_search_resolution: 0.005
-    kinematics_solver_timeout: 0.05
-    kinematics_solver_attempts: 3
+    # Kinematics configuration (robot_description_kinematics namespace)
+    robot_description_kinematics:
+      panda_arm:
+        kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
+        kinematics_solver_search_resolution: 0.005
+        kinematics_solver_timeout: 0.05
+        kinematics_solver_attempts: 3
 
-# Trajectory execution parameters
-moveit_manage_controllers: false
-trajectory_execution:
-  allowed_execution_duration_scaling: 1.2
-  allowed_goal_duration_margin: 0.5
-  allowed_start_tolerance: 0.01
+    # Trajectory execution parameters
+    moveit_manage_controllers: false
+    trajectory_execution:
+      allowed_execution_duration_scaling: 1.2
+      allowed_goal_duration_margin: 0.5
+      allowed_start_tolerance: 0.01
 
-# Controller manager configuration
-moveit_simple_controller_manager:
-  controller_names:
-    - panda_arm_controller
-    - panda_hand_controller
+    # Controller manager configuration
+    # CRITICAL: Controller configs MUST be nested under moveit_simple_controller_manager
+    # MoveIt looks for: moveit_simple_controller_manager.<controller_name>.action_ns
+    moveit_simple_controller_manager:
+      controller_names:
+        - panda_arm_controller
+        - panda_hand_controller
+      panda_arm_controller:
+        type: FollowJointTrajectory
+        action_ns: follow_joint_trajectory
+        joints:
+          - panda_joint1
+          - panda_joint2
+          - panda_joint3
+          - panda_joint4
+          - panda_joint5
+          - panda_joint6
+          - panda_joint7
+      panda_hand_controller:
+        type: GripperCommand
+        action_ns: gripper_cmd
+        joints:
+          - panda_finger_joint1
 
-panda_arm_controller:
-  type: FollowJointTrajectory
-  action_ns: follow_joint_trajectory
-  joints:
-    - panda_joint1
-    - panda_joint2
-    - panda_joint3
-    - panda_joint4
-    - panda_joint5
-    - panda_joint6
-    - panda_joint7
+    # Planning scene monitor
+    publish_planning_scene: true
+    publish_geometry_updates: true
+    publish_state_updates: true
+    publish_transforms_updates: true
 
-panda_hand_controller:
-  type: GripperCommand
-  action_ns: gripper_cmd
-  joints:
-    - panda_finger_joint1
-
-# Planning scene monitor
-publish_planning_scene: true
-publish_geometry_updates: true
-publish_state_updates: true
-publish_transforms_updates: true
-
-# Joint limits (robot_description_planning namespace)
-robot_description_planning:
-  joint_limits:
-    panda_joint1:
-      has_velocity_limits: true
-      max_velocity: 2.175
-    panda_joint2:
-      has_velocity_limits: true
-      max_velocity: 2.175
-    panda_joint3:
-      has_velocity_limits: true
-      max_velocity: 2.175
-    panda_joint4:
-      has_velocity_limits: true
-      max_velocity: 2.175
-    panda_joint5:
-      has_velocity_limits: true
-      max_velocity: 2.610
-    panda_joint6:
-      has_velocity_limits: true
-      max_velocity: 2.610
-    panda_joint7:
-      has_velocity_limits: true
-      max_velocity: 2.610
+    # Joint limits (robot_description_planning namespace)
+    robot_description_planning:
+      joint_limits:
+        panda_joint1:
+          has_velocity_limits: true
+          max_velocity: 2.175
+        panda_joint2:
+          has_velocity_limits: true
+          max_velocity: 2.175
+        panda_joint3:
+          has_velocity_limits: true
+          max_velocity: 2.175
+        panda_joint4:
+          has_velocity_limits: true
+          max_velocity: 2.175
+        panda_joint5:
+          has_velocity_limits: true
+          max_velocity: 2.610
+        panda_joint6:
+          has_velocity_limits: true
+          max_velocity: 2.610
+        panda_joint7:
+          has_velocity_limits: true
+          max_velocity: 2.610
