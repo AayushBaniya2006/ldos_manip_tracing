@@ -19,8 +19,10 @@ Requirements:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -79,9 +81,20 @@ def load_config() -> dict:
 
 
 def save_config(config: dict):
-    """Save experiment configuration."""
-    with open(CONFIG_FILE, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
+    """Save experiment configuration atomically (write to temp, then rename)."""
+    # Write to temp file in same directory for atomic rename
+    config_dir = CONFIG_FILE.parent
+    fd, temp_path = tempfile.mkstemp(suffix='.yaml', prefix='.config_', dir=config_dir)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False)
+        # Atomic rename
+        os.rename(temp_path, CONFIG_FILE)
+    except Exception as e:
+        # Clean up temp file on failure
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise e
 
 
 def update_config_param(param_name: str, value: float):
@@ -188,7 +201,6 @@ def run_trials(
     # Move results
     scenario_results = WS_ROOT / "results" / scenario
     if scenario_results.exists():
-        import shutil
         if output_dir.exists():
             shutil.rmtree(output_dir)
         shutil.move(str(scenario_results), str(output_dir))

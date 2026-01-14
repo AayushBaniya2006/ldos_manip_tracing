@@ -1,0 +1,27 @@
+# LDOS Manipulation Tracing - Python Dependencies
+#
+# Core dependencies for analysis and experiment scripts
+# Install with: pip install -r requirements.txt
+
+# Data analysis
+pandas>=2.0.0
+numpy>=1.24.0
+
+# YAML configuration handling
+pyyaml>=6.0
+ruamel.yaml>=0.17.0  # Optional: for preserving comments in YAML
+
+# Trace analysis (babeltrace2)
+# Note: babeltrace2 may need to be installed via system package manager:
+#   Ubuntu/Debian: sudo apt install python3-babeltrace2
+#   Or: pip install babeltrace2
+
+# Plotting and visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0  # Optional: for nicer plots
+
+# Statistics
+scipy>=1.10.0
+
+# Optional: for better progress bars
+# tqdm>=4.65.0

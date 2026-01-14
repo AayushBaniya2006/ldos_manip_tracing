@@ -97,17 +97,13 @@ update_config() {
 
     log_info "Setting $param = $value in config"
 
-    # Use sed to update the YAML file
-    # Handle both top-level and nested parameters
-    if grep -q "^${param}:" "$CONFIG_FILE"; then
-        # Top-level parameter
-        sed -i "s/^${param}:.*/${param}: ${value}/" "$CONFIG_FILE"
-    elif grep -q "  ${param}:" "$CONFIG_FILE"; then
-        # Nested parameter (2-space indent)
-        sed -i "s/  ${param}:.*/  ${param}: ${value}/" "$CONFIG_FILE"
-    elif grep -q "    ${param}:" "$CONFIG_FILE"; then
-        # Deeply nested parameter (4-space indent)
-        sed -i "s/    ${param}:.*/    ${param}: ${value}/" "$CONFIG_FILE"
+    # Use Python script for safe YAML manipulation
+    # This handles nested parameters correctly and avoids sed whitespace issues
+    if python3 "$SCRIPT_DIR/update_config.py" \
+        --config "$CONFIG_FILE" \
+        --set "${param}=${value}" \
+        --quiet; then
+        return 0
     else
         log_error "Parameter $param not found in config file"
         return 1

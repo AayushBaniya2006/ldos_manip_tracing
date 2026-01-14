@@ -82,18 +82,25 @@ class TraceMetrics:
 
     def compute_aggregates(self):
         """Compute aggregate statistics from raw data."""
-        if self.callback_durations_ns:
-            durations_ms = [d / 1e6 for d in self.callback_durations_ns]
-            self.callback_duration_mean_ms = sum(durations_ms) / len(durations_ms)
-            self.callback_duration_p50_ms = sorted(durations_ms)[len(durations_ms) // 2]
-            self.callback_duration_p95_ms = sorted(durations_ms)[int(len(durations_ms) * 0.95)]
-            self.callback_duration_p99_ms = sorted(durations_ms)[int(len(durations_ms) * 0.99)]
-            self.callback_duration_max_ms = max(durations_ms)
+        if not self.callback_durations_ns:
+            return
 
-            # Compute std dev
-            mean = self.callback_duration_mean_ms
-            variance = sum((d - mean) ** 2 for d in durations_ms) / len(durations_ms)
-            self.callback_duration_std_ms = variance ** 0.5
+        durations_ms = [d / 1e6 for d in self.callback_durations_ns]
+        n = len(durations_ms)
+        sorted_durations = sorted(durations_ms)
+
+        self.callback_duration_mean_ms = sum(durations_ms) / n
+        self.callback_duration_max_ms = max(durations_ms)
+
+        # Safe percentile calculation with bounds checking
+        self.callback_duration_p50_ms = sorted_durations[min(n // 2, n - 1)]
+        self.callback_duration_p95_ms = sorted_durations[min(int(n * 0.95), n - 1)]
+        self.callback_duration_p99_ms = sorted_durations[min(int(n * 0.99), n - 1)]
+
+        # Compute std dev
+        mean = self.callback_duration_mean_ms
+        variance = sum((d - mean) ** 2 for d in durations_ms) / n
+        self.callback_duration_std_ms = variance ** 0.5
 
 
 class TraceAnalyzer:
@@ -103,8 +110,8 @@ class TraceAnalyzer:
         self.trace_path = Path(trace_path)
         self.metrics = TraceMetrics(trace_path=str(self.trace_path))
 
-        # State tracking
-        self._active_callbacks: Dict[Tuple[int, int], CallbackEvent] = {}  # (vtid, callback_ptr) -> event
+        # State tracking - use stack per thread for proper nested callback handling
+        self._callback_stacks: Dict[int, List[CallbackEvent]] = {}  # vtid -> stack of active callbacks
         self._callback_names: Dict[int, str] = {}  # callback_ptr -> name
 
     def analyze(self) -> TraceMetrics:
@@ -172,6 +179,12 @@ class TraceAnalyzer:
         self.metrics.compute_aggregates()
 
         print(f"Processed {event_count} events")
+
+        # Warn if trace appears empty or has no callback events
+        if event_count == 0:
+            print("WARNING: Trace contains no events. Check if tracing was properly enabled.")
+        elif self.metrics.total_callbacks == 0:
+            print("WARNING: No callback events found in trace. ROS 2 tracepoints may not be enabled.")
         print(f"Trace duration: {self.metrics.duration_s:.2f}s")
         print(f"Callbacks: {self.metrics.total_callbacks}")
 
@@ -209,32 +222,43 @@ class TraceAnalyzer:
         return self.trace_path if self.trace_path.exists() else None
 
     def _handle_callback_start(self, event, ts_ns: int):
-        """Handle callback_start event."""
+        """Handle callback_start event using stack-based approach for nested callbacks."""
         callback_ptr = event['callback']
         vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
         vpid = event.common_context_field.get('vpid', 0) if event.common_context_field else 0
         procname = str(event.common_context_field.get('procname', '')) if event.common_context_field else ''
 
-        key = (vtid, callback_ptr)
-        self._active_callbacks[key] = CallbackEvent(
+        # Initialize stack for this thread if needed
+        if vtid not in self._callback_stacks:
+            self._callback_stacks[vtid] = []
+
+        # Push callback onto thread's stack
+        self._callback_stacks[vtid].append(CallbackEvent(
             callback_ptr=callback_ptr,
             start_ns=ts_ns,
             vpid=vpid,
             vtid=vtid,
             procname=procname
-        )
+        ))
 
     def _handle_callback_end(self, event, ts_ns: int):
-        """Handle callback_end event."""
+        """Handle callback_end event using stack-based approach for nested callbacks."""
         callback_ptr = event['callback']
         vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
 
-        key = (vtid, callback_ptr)
-        if key in self._active_callbacks:
-            cb_event = self._active_callbacks.pop(key)
-            cb_event.end_ns = ts_ns
-            cb_event.duration_ns = ts_ns - cb_event.start_ns
-            self.metrics.callback_durations_ns.append(cb_event.duration_ns)
+        if vtid not in self._callback_stacks or not self._callback_stacks[vtid]:
+            return  # No matching start event
+
+        # Find the most recent matching callback on the stack
+        # In most cases, it's the top of stack, but handle out-of-order ends gracefully
+        stack = self._callback_stacks[vtid]
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i].callback_ptr == callback_ptr:
+                cb_event = stack.pop(i)
+                cb_event.end_ns = ts_ns
+                cb_event.duration_ns = ts_ns - cb_event.start_ns
+                self.metrics.callback_durations_ns.append(cb_event.duration_ns)
+                break
 
     def _handle_callback_register(self, event):
         """Handle callback registration event."""

@@ -27,6 +27,11 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import yaml
 
+# Add the analysis directory to path for local imports
+SCRIPT_DIR = Path(__file__).parent.resolve()
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 # Import local stats utilities
 try:
     from stats_utils import compare_scenarios, ComparisonResult

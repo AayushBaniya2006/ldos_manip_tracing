@@ -189,25 +189,35 @@ def aggregate_json_results(json_files: List[Path]) -> pd.DataFrame:
 def compute_sweep_point(df: pd.DataFrame, param_value: float) -> SweepPoint:
     """Compute statistics for one sweep level."""
     n_trials = len(df)
-    n_success = len(df[df.get('status', 'success') == 'success']) if 'status' in df.columns else n_trials
+
+    # Fix M3: Properly check if status column exists before filtering
+    if 'status' in df.columns:
+        n_success = len(df[df['status'] == 'success'])
+        successful_df = df[df['status'] == 'success']
+    else:
+        n_success = n_trials
+        successful_df = df
+
     success_rate = n_success / n_trials if n_trials > 0 else 0
 
     latency_stats = {}
 
     for metric in METRICS:
         if metric in df.columns:
-            data = df[metric].dropna()
+            # Fix M4: Use successful trials only and handle NaN
+            data = successful_df[metric].dropna()
             if len(data) > 0:
                 sorted_data = np.sort(data)
                 n = len(sorted_data)
+                # Safe percentile calculation with bounds checking (like C5 fix)
                 latency_stats[metric] = {
-                    'mean': data.mean(),
-                    'std': data.std(),
-                    'p50': sorted_data[n // 2],
-                    'p95': sorted_data[int(n * 0.95)] if n > 20 else sorted_data[-1],
-                    'p99': sorted_data[int(n * 0.99)] if n > 100 else sorted_data[-1],
-                    'min': data.min(),
-                    'max': data.max(),
+                    'mean': float(data.mean()),
+                    'std': float(data.std()) if n > 1 else 0.0,
+                    'p50': float(sorted_data[min(n // 2, n - 1)]),
+                    'p95': float(sorted_data[min(int(n * 0.95), n - 1)]),
+                    'p99': float(sorted_data[min(int(n * 0.99), n - 1)]),
+                    'min': float(data.min()),
+                    'max': float(data.max()),
                 }
 
     return SweepPoint(

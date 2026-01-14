@@ -9,6 +9,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
     TimerAction,
     GroupAction,
 )
@@ -79,10 +80,16 @@ def generate_launch_description():
         }.items(),
     )
 
-    delayed_moveit = TimerAction(
-        period=12.0,  # Wait for Gazebo + controllers
-        actions=[moveit_bringup],
-    )
+    # Note: TimerAction.period doesn't accept LaunchConfiguration directly,
+    # so we use OpaqueFunction to evaluate the delay at launch time
+    def create_delayed_moveit(context):
+        delay_value = float(LaunchConfiguration("moveit_delay").perform(context))
+        return [TimerAction(
+            period=delay_value,
+            actions=[moveit_bringup],
+        )]
+
+    delayed_moveit = OpaqueFunction(function=create_delayed_moveit)
 
     return LaunchDescription(
         declared_arguments

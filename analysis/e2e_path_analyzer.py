@@ -506,9 +506,10 @@ class E2EPathAnalyzer:
                 latency_mean_ms=sum(latencies_ms) / n,
                 latency_min_ms=latencies_sorted[0],
                 latency_max_ms=latencies_sorted[-1],
-                latency_p50_ms=latencies_sorted[n // 2],
-                latency_p95_ms=latencies_sorted[int(n * 0.95)] if n > 20 else latencies_sorted[-1],
-                latency_p99_ms=latencies_sorted[int(n * 0.99)] if n > 100 else latencies_sorted[-1],
+                # Safe percentile calculation with bounds checking
+                latency_p50_ms=latencies_sorted[min(n // 2, n - 1)],
+                latency_p95_ms=latencies_sorted[min(int(n * 0.95), n - 1)],
+                latency_p99_ms=latencies_sorted[min(int(n * 0.99), n - 1)],
             )
 
             # Std dev

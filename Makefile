@@ -81,37 +81,7 @@ smoke_test:
 	@echo "=== Running smoke test ==="
 	@echo "This validates the full pipeline in <60 seconds"
 	$(ROS_SETUP)
-	@# Start stack in background
-	timeout 50 ros2 launch ldos_harness full_stack.launch.py headless:=true use_rviz:=false &
-	STACK_PID=$$!
-	@# Wait for initialization
-	sleep 25
-	@# Check if MoveGroup is available
-	if ros2 action list 2>/dev/null | grep -q "move_action"; then \
-		echo "[PASS] MoveGroup action available"; \
-	else \
-		echo "[FAIL] MoveGroup action not found"; \
-		kill $$STACK_PID 2>/dev/null || true; \
-		exit 1; \
-	fi
-	@# Run single benchmark
-	ros2 run ldos_harness benchmark_runner.py \
-		--trial-id smoke_test \
-		--scenario smoke \
-		--output-dir $(WS_ROOT)/results/smoke \
-		--timeout 30.0 && echo "[PASS] Benchmark completed" || echo "[FAIL] Benchmark failed"
-	@# Cleanup
-	kill $$STACK_PID 2>/dev/null || true
-	wait $$STACK_PID 2>/dev/null || true
-	@# Check result
-	@if [ -f "$(WS_ROOT)/results/smoke/smoke_test_result.json" ]; then \
-		echo "[PASS] Result file created"; \
-		cat $(WS_ROOT)/results/smoke/smoke_test_result.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Status: {d[\"status\"]}')"; \
-	else \
-		echo "[FAIL] No result file"; \
-		exit 1; \
-	fi
-	@echo "=== Smoke test complete ==="
+	./scripts/smoke_test.sh
 
 #------------------------------------------------------------------------------
 # Experiment Execution

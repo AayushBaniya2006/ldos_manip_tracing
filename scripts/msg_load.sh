@@ -34,16 +34,50 @@ log_info "Duration: ${DURATION}s"
 
 # Array to store PIDs
 PIDS=()
+FAILED_SPAWNS=0
 
-# Start multiple flood nodes
+# Start multiple flood nodes with verification
 for i in $(seq 1 "$NUM_PUBS"); do
     ros2 run ldos_harness msg_flood_node.py \
         --rate "$RATE_HZ" \
         --topic "/flood_topic_$i" \
         --payload-size 1024 &
-    PIDS+=($!)
-    log_info "Started publisher $i with PID ${PIDS[-1]}"
+    PID=$!
+
+    # Brief pause to let process start
+    sleep 0.2
+
+    # Verify the process actually started
+    if kill -0 "$PID" 2>/dev/null; then
+        PIDS+=("$PID")
+        log_info "Started publisher $i with PID $PID"
+    else
+        log_info "WARNING: Publisher $i failed to start, retrying..."
+        FAILED_SPAWNS=$((FAILED_SPAWNS + 1))
+
+        # Retry once
+        ros2 run ldos_harness msg_flood_node.py \
+            --rate "$RATE_HZ" \
+            --topic "/flood_topic_$i" \
+            --payload-size 1024 &
+        PID=$!
+        sleep 0.2
+
+        if kill -0 "$PID" 2>/dev/null; then
+            PIDS+=("$PID")
+            log_info "Started publisher $i with PID $PID (retry succeeded)"
+        else
+            log_info "ERROR: Publisher $i failed to start after retry"
+        fi
+    fi
 done
+
+if [ ${#PIDS[@]} -eq 0 ]; then
+    log_info "ERROR: No publishers started successfully"
+    exit 1
+fi
+
+log_info "Successfully started ${#PIDS[@]}/$NUM_PUBS publishers"
 
 # Handle termination
 cleanup() {

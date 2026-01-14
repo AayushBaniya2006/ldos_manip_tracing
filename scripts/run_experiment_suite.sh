@@ -19,6 +19,7 @@ NUM_TRIALS="${1:-10}"
 SCENARIOS="${2:-baseline,cpu_load,msg_load}"
 WARMUP_TRIALS=2
 COOLDOWN_SECONDS=5
+MAX_RETRIES=2  # Retry failed trials up to this many times
 
 # Colors
 RED='\033[0;31m'
@@ -90,17 +91,36 @@ run_scenario() {
     ros2 launch ldos_harness full_stack.launch.py headless:=true use_rviz:=false &
     STACK_PID=$!
 
-    # Wait for stack to initialize
-    log_info "Waiting for stack to initialize (25s)..."
-    sleep 25
+    # Wait for stack to initialize with polling (timeout: 120s)
+    log_info "Waiting for stack to initialize (polling, max 120s)..."
+    STACK_TIMEOUT=120
+    STACK_POLL_INTERVAL=5
+    STACK_ELAPSED=0
 
-    # Verify stack is ready
+    while [ $STACK_ELAPSED -lt $STACK_TIMEOUT ]; do
+        # Check if MoveGroup action is available
+        if ros2 action list 2>/dev/null | grep -q "move_action"; then
+            log_info "Stack ready after ${STACK_ELAPSED}s"
+            break
+        fi
+
+        # Check if stack process is still running
+        if ! kill -0 $STACK_PID 2>/dev/null; then
+            log_error "Stack process died unexpectedly"
+            return 1
+        fi
+
+        sleep $STACK_POLL_INTERVAL
+        STACK_ELAPSED=$((STACK_ELAPSED + STACK_POLL_INTERVAL))
+        log_info "  Still waiting... (${STACK_ELAPSED}s / ${STACK_TIMEOUT}s)"
+    done
+
+    # Final verification after polling loop
     if ! ros2 action list 2>/dev/null | grep -q "move_action"; then
-        log_error "Stack failed to start for $scenario"
+        log_error "Stack failed to start for $scenario (timeout after ${STACK_TIMEOUT}s)"
         kill $STACK_PID 2>/dev/null || true
         return 1
     fi
-    log_info "Stack ready"
 
     # Start load generator if needed
     LOAD_PID=""
@@ -142,47 +162,111 @@ run_scenario() {
         mkdir -p "$TRACE_DIR"
         mkdir -p "$RESULT_DIR"
 
-        # Collect metadata
-        cat > "$RESULT_DIR/${TRIAL_ID}_metadata.json" << METAEOF
-{
-    "trial_id": "$TRIAL_ID",
-    "experiment_id": "$EXPERIMENT_ID",
-    "scenario": "$scenario",
-    "trial_number": $trial,
-    "timestamp": "$(date -Iseconds)",
-    "trace_session": "$TRACE_SESSION",
-    "environment": {
-        "ros_distro": "${ROS_DISTRO:-unknown}",
-        "hostname": "$(hostname)",
-        "kernel": "$(uname -r)",
-        "cpu_model": "$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo 'unknown')"
+        # Collect metadata using Python for safe JSON encoding
+        python3 -c "
+import json
+import os
+import subprocess
+from datetime import datetime
+
+# Get CPU model safely
+try:
+    with open('/proc/cpuinfo', 'r') as f:
+        for line in f:
+            if 'model name' in line:
+                cpu_model = line.split(':')[1].strip()
+                break
+        else:
+            cpu_model = 'unknown'
+except:
+    cpu_model = 'unknown'
+
+metadata = {
+    'trial_id': '$TRIAL_ID',
+    'experiment_id': '$EXPERIMENT_ID',
+    'scenario': '$scenario',
+    'trial_number': $trial,
+    'timestamp': datetime.now().isoformat(),
+    'trace_session': '$TRACE_SESSION',
+    'environment': {
+        'ros_distro': os.environ.get('ROS_DISTRO', 'unknown'),
+        'hostname': subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(),
+        'kernel': subprocess.run(['uname', '-r'], capture_output=True, text=True).stdout.strip(),
+        'cpu_model': cpu_model
     }
 }
-METAEOF
 
-        # Start trace
-        "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > /dev/null 2>&1
+with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
+    json.dump(metadata, f, indent=4)
+"
 
-        sleep 1
+        # Retry loop for transient failures
+        TRIAL_SUCCESS=false
+        for retry in $(seq 0 $MAX_RETRIES); do
+            if [ $retry -gt 0 ]; then
+                log_info "  Retry $retry/$MAX_RETRIES for $TRIAL_ID"
+                # Update trace session name for retry
+                TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                TRACE_SESSION="ldos_${TRIAL_ID}_retry${retry}_${TIMESTAMP}"
+                TRACE_DIR="$WS_ROOT/traces/$TRACE_SESSION"
+                mkdir -p "$TRACE_DIR"
+                sleep 2  # Brief pause before retry
+            fi
 
-        # Run benchmark
-        BENCH_EXIT=0
-        ros2 run ldos_harness benchmark_runner.py \
-            --trial-id "$TRIAL_ID" \
-            --scenario "$scenario" \
-            --output-dir "$RESULT_DIR" \
-            --timeout 60.0 2>&1 || BENCH_EXIT=$?
+            # Start trace
+            "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > /dev/null 2>&1
 
-        # Stop trace
-        "$SCRIPT_DIR/stop_trace.sh" "$TRACE_SESSION" > /dev/null 2>&1 || true
+            sleep 1
 
-        # Track success/failure
-        if [ $BENCH_EXIT -eq 0 ]; then
+            # Run benchmark
+            BENCH_EXIT=0
+            ros2 run ldos_harness benchmark_runner.py \
+                --trial-id "$TRIAL_ID" \
+                --scenario "$scenario" \
+                --output-dir "$RESULT_DIR" \
+                --timeout 60.0 2>&1 || BENCH_EXIT=$?
+
+            # Stop trace
+            "$SCRIPT_DIR/stop_trace.sh" "$TRACE_SESSION" > /dev/null 2>&1 || true
+
+            # Verify result file was created
+            RESULT_FILE="$RESULT_DIR/${TRIAL_ID}_result.json"
+            RESULT_FILE_EXISTS=false
+            if [[ -f "$RESULT_FILE" ]]; then
+                RESULT_FILE_EXISTS=true
+            fi
+
+            # Check if successful
+            if [ $BENCH_EXIT -eq 0 ] && [ "$RESULT_FILE_EXISTS" = true ]; then
+                TRIAL_SUCCESS=true
+                break
+            fi
+
+            # Log retry reason
+            if [ $retry -lt $MAX_RETRIES ]; then
+                if [ $BENCH_EXIT -ne 0 ]; then
+                    log_warn "  Trial failed (exit code $BENCH_EXIT), will retry..."
+                elif [ "$RESULT_FILE_EXISTS" = false ]; then
+                    log_warn "  Result file not created, will retry..."
+                fi
+            fi
+        done
+
+        # Track final success/failure after all retries
+        if [ "$TRIAL_SUCCESS" = true ]; then
             SCENARIO_SUCCESS[$scenario]=$((${SCENARIO_SUCCESS[$scenario]} + 1))
-            log_info "  Result: SUCCESS"
+            if [ $retry -gt 0 ]; then
+                log_info "  Result: SUCCESS (after $retry retries)"
+            else
+                log_info "  Result: SUCCESS"
+            fi
         else
             SCENARIO_FAILED[$scenario]=$((${SCENARIO_FAILED[$scenario]} + 1))
-            log_warn "  Result: FAILED (exit code $BENCH_EXIT)"
+            if [ $BENCH_EXIT -ne 0 ]; then
+                log_warn "  Result: FAILED (exit code $BENCH_EXIT after $MAX_RETRIES retries)"
+            elif [ "$RESULT_FILE_EXISTS" = false ]; then
+                log_warn "  Result: FAILED (result file not created after $MAX_RETRIES retries)"
+            fi
         fi
 
         # Cooldown between trials

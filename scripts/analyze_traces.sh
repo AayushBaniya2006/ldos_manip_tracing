@@ -47,16 +47,25 @@ for scenario in "${SCENARIOS[@]}"; do
         --aggregate-only
 
     # Process individual traces (if they exist)
+    # Enable nullglob so glob returns empty array if no matches
     TRACE_BASE="$WS_ROOT/traces"
-    for trace_dir in "$TRACE_BASE"/ldos_${scenario}_*; do
-        if [ -d "$trace_dir" ]; then
-            trace_name=$(basename "$trace_dir")
-            log_info "Analyzing trace: $trace_name"
-            python3 "$WS_ROOT/analysis/analyze_trace.py" \
-                --trace-dir "$trace_dir" \
-                --output-dir "$OUTPUT_DIR/$trace_name" || true
-        fi
-    done
+    shopt -s nullglob
+    trace_dirs=("$TRACE_BASE"/ldos_${scenario}_*)
+    shopt -u nullglob
+
+    if [ ${#trace_dirs[@]} -eq 0 ]; then
+        log_info "No trace directories found for $scenario"
+    else
+        for trace_dir in "${trace_dirs[@]}"; do
+            if [ -d "$trace_dir" ]; then
+                trace_name=$(basename "$trace_dir")
+                log_info "Analyzing trace: $trace_name"
+                python3 "$WS_ROOT/analysis/analyze_trace.py" \
+                    --trace-dir "$trace_dir" \
+                    --output-dir "$OUTPUT_DIR/$trace_name" || true
+            fi
+        done
+    fi
 done
 
 log_section "Generating Combined Summary"

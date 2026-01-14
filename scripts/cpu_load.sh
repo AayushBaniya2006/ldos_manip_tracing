@@ -61,8 +61,24 @@ fi
 STRESS_PID=$!
 log_info "stress-ng started with PID: $STRESS_PID"
 
-# Handle termination
-trap "kill $STRESS_PID 2>/dev/null; exit 0" SIGTERM SIGINT
+# Verify stress-ng actually started
+sleep 0.5
+if ! kill -0 "$STRESS_PID" 2>/dev/null; then
+    log_error "stress-ng failed to start"
+    exit 1
+fi
+
+# Handle termination - include EXIT to catch all exit paths
+cleanup() {
+    log_info "Cleaning up stress-ng processes..."
+    # Kill the main stress-ng process
+    kill "$STRESS_PID" 2>/dev/null || true
+    # Also kill any child processes (stress-ng spawns workers)
+    pkill -P "$STRESS_PID" 2>/dev/null || true
+    # Fallback: kill any stress-ng processes started by this script
+    pkill -P $$ 2>/dev/null || true
+}
+trap cleanup SIGTERM SIGINT EXIT
 
 # Wait for stress-ng to complete
 wait $STRESS_PID 2>/dev/null || true
