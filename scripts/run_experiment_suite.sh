@@ -20,6 +20,8 @@ SCENARIOS="${2:-baseline,cpu_load,msg_load}"
 WARMUP_TRIALS=2
 COOLDOWN_SECONDS=5
 MAX_RETRIES=2  # Retry failed trials up to this many times
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
+BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
 
 # Colors
 RED='\033[0;31m'
@@ -33,15 +35,86 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_section() { echo -e "\n${CYAN}======================================${NC}"; echo -e "${CYAN}=== $1 ===${NC}"; echo -e "${CYAN}======================================${NC}"; }
 
-# Source ROS (disable -u temporarily for ROS setup scripts)
+# Source ROS dynamically (disable -u temporarily for ROS setup scripts)
 set +u
-if [ -f /opt/ros/jazzy/setup.bash ]; then
-    source /opt/ros/jazzy/setup.bash
-fi
+ROS_FOUND=false
+for distro in jazzy humble iron rolling; do
+    if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+        source "/opt/ros/${distro}/setup.bash"
+        ROS_FOUND=true
+        break
+    fi
+done
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
 fi
+# Activate venv if exists
+if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
+    source "$WS_ROOT/.venv/bin/activate"
+fi
 set -u
+
+# =============================================================================
+# PRE-FLIGHT CHECKS
+# =============================================================================
+
+preflight_check() {
+    log_info "Running pre-flight checks..."
+    local errors=0
+
+    # Check ROS 2 was sourced
+    if [ "$ROS_FOUND" = false ]; then
+        log_error "No ROS 2 installation found in /opt/ros/"
+        errors=$((errors + 1))
+    fi
+
+    # Check workspace is built
+    if [ ! -d "$WS_ROOT/install" ]; then
+        log_error "Workspace not built. Run: make setup"
+        errors=$((errors + 1))
+    fi
+
+    # Check ldos_harness package is available
+    if ! ros2 pkg list 2>/dev/null | grep -q "ldos_harness"; then
+        log_error "ldos_harness package not found. Run: make setup"
+        log_error "  Ensure you have sourced install/setup.bash"
+        errors=$((errors + 1))
+    fi
+
+    # Check launch file exists
+    local launch_file="$WS_ROOT/src/ldos_harness/launch/full_stack.launch.py"
+    if [ ! -f "$launch_file" ]; then
+        log_error "Launch file not found: $launch_file"
+        errors=$((errors + 1))
+    fi
+
+    # Check LTTng is available
+    if ! command -v lttng &>/dev/null; then
+        log_warn "LTTng not found. Tracing will be skipped."
+    else
+        # Check tracing group
+        if ! groups | grep -q tracing; then
+            log_warn "User not in 'tracing' group. Tracing may fail."
+            log_warn "  Fix: sudo usermod -aG tracing \$USER && logout/login"
+        fi
+    fi
+
+    # Check helper scripts exist and are executable
+    for script in start_trace.sh stop_trace.sh; do
+        if [ ! -x "$SCRIPT_DIR/$script" ]; then
+            log_warn "Script not executable: $SCRIPT_DIR/$script"
+        fi
+    done
+
+    if [ $errors -gt 0 ]; then
+        log_error "Pre-flight checks failed with $errors error(s)"
+        exit 1
+    fi
+
+    log_info "All pre-flight checks passed"
+}
+
+preflight_check
 
 log_section "LDOS Experiment Suite"
 log_info "Trials per scenario: $NUM_TRIALS"
@@ -99,7 +172,7 @@ run_scenario() {
 
     while [ $STACK_ELAPSED -lt $STACK_TIMEOUT ]; do
         # Check if MoveGroup action is available
-        if ros2 action list 2>/dev/null | grep -q "move_action"; then
+        if ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
             log_info "Stack ready after ${STACK_ELAPSED}s"
             break
         fi
@@ -116,7 +189,7 @@ run_scenario() {
     done
 
     # Final verification after polling loop
-    if ! ros2 action list 2>/dev/null | grep -q "move_action"; then
+    if ! ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
         log_error "Stack failed to start for $scenario (timeout after ${STACK_TIMEOUT}s)"
         kill $STACK_PID 2>/dev/null || true
         return 1
@@ -144,7 +217,8 @@ run_scenario() {
             --trial-id "warmup_${scenario}_$(printf '%03d' "$w")" \
             --scenario "$scenario" \
             --output-dir "$WS_ROOT/results/warmup" \
-            --timeout 60.0 2>&1 || true
+            --timeout "$BENCHMARK_TIMEOUT" \
+            --action-name "$MOVEIT_ACTION_NAME" 2>&1 || true
         sleep 2
     done
 
@@ -224,7 +298,8 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
                 --trial-id "$TRIAL_ID" \
                 --scenario "$scenario" \
                 --output-dir "$RESULT_DIR" \
-                --timeout 60.0 2>&1 || BENCH_EXIT=$?
+                --timeout "$BENCHMARK_TIMEOUT" \
+                --action-name "$MOVEIT_ACTION_NAME" 2>&1 || BENCH_EXIT=$?
 
             # Stop trace
             "$SCRIPT_DIR/stop_trace.sh" "$TRACE_SESSION" > /dev/null 2>&1 || true

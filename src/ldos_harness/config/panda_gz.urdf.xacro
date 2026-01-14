@@ -1,19 +1,41 @@
 <?xml version="1.0"?>
+<!--
+  ============================================================================
+  WARNING: SIMPLIFIED GEOMETRY FOR BENCHMARKING ONLY
+  ============================================================================
+
+  This URDF uses simplified primitive shapes (cylinders, boxes) instead of the
+  official Franka Panda mesh geometry from franka_description package.
+
+  Implications:
+  - Collision geometry is approximate (affects planning times)
+  - Visual appearance is simplified (cylinders instead of proper robot shape)
+  - Inertial properties are estimated (may affect dynamics)
+
+  For production use or accurate collision checking:
+  1. Install franka_description: sudo apt install ros-jazzy-franka-description
+  2. Replace this file with proper xacro include:
+     <xacro:include filename="$(find franka_description)/robots/panda_arm.urdf.xacro"/>
+
+  This simplified version is intentional for:
+  - Reducing external dependencies for benchmarking
+  - Ensuring reproducibility without specific robot assets
+  - Faster loading times during repeated experiments
+  ============================================================================
+-->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="panda">
   <!--
     Panda robot URDF with Gazebo Harmonic (gz-sim8) ros2_control plugin
 
     This xacro includes:
-    - Full Panda arm + hand geometry
+    - Simplified Panda arm + hand geometry (primitive shapes)
     - gz_ros2_control plugin for simulation
     - ros2_control hardware interface definitions
+
+    See warning above for production use instructions.
   -->
 
   <xacro:arg name="use_sim_time" default="true"/>
-
-  <!-- Include the standard Panda description -->
-  <!-- Note: In production, include from franka_description package -->
-  <!-- For now, we define minimal geometry inline -->
 
   <!-- Materials -->
   <material name="panda_white">

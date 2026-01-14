@@ -15,6 +15,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Python virtual environment
+VENV_DIR="${WS_ROOT}/.venv"
+
+# Supported ROS 2 distros (in preference order)
+ROS_DISTROS=("jazzy" "humble" "iron" "rolling")
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,9 +44,18 @@ echo ""
 check_needs_bootstrap() {
     local needs_bootstrap=false
 
-    # Check if ROS 2 is installed
-    if [ ! -f "/opt/ros/jazzy/setup.bash" ]; then
-        log_error "ROS 2 Jazzy not found at /opt/ros/jazzy/"
+    # Check if any ROS 2 is installed (dynamic detection)
+    local ros_found=false
+    for distro in "${ROS_DISTROS[@]}"; do
+        if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+            ros_found=true
+            break
+        fi
+    done
+
+    if [ "$ros_found" = false ]; then
+        log_error "No ROS 2 installation found in /opt/ros/"
+        log_error "Checked: ${ROS_DISTROS[*]}"
         needs_bootstrap=true
     fi
 
@@ -78,18 +93,36 @@ check_needs_bootstrap() {
 
 setup_ros_env() {
     if [ -z "${ROS_DISTRO:-}" ]; then
-        log_info "Sourcing ROS 2 Jazzy..."
+        log_info "Detecting ROS 2 installation..."
         # Disable -u temporarily for ROS setup scripts (they use unbound variables)
         set +u
-        source /opt/ros/jazzy/setup.bash
-        set -u
-    fi
 
-    if [ "$ROS_DISTRO" != "jazzy" ]; then
-        log_warn "Expected ROS 2 Jazzy, got $ROS_DISTRO"
+        local ros_found=false
+        for distro in "${ROS_DISTROS[@]}"; do
+            if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+                log_info "Found ROS 2 $distro"
+                source "/opt/ros/${distro}/setup.bash"
+                ros_found=true
+                break
+            fi
+        done
+
+        set -u
+
+        if [ "$ros_found" = false ]; then
+            log_error "No ROS 2 installation found"
+            exit 1
+        fi
     fi
 
     log_info "ROS 2 $ROS_DISTRO environment active"
+
+    # Also activate venv if it exists
+    if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/activate" ]; then
+        log_info "Activating Python virtual environment..."
+        # shellcheck disable=SC1091
+        source "$VENV_DIR/bin/activate"
+    fi
 }
 
 ###############################################################################
@@ -177,6 +210,16 @@ check_lttng() {
 check_python() {
     log_step "Checking Python dependencies..."
 
+    # Determine which python to use (prefer venv)
+    local PYTHON_CMD="python3"
+    if [ -f "$VENV_DIR/bin/python3" ]; then
+        PYTHON_CMD="$VENV_DIR/bin/python3"
+        echo -e "  [${GREEN}OK${NC}] Virtual environment: $VENV_DIR"
+    else
+        echo -e "  [${YELLOW}WARN${NC}] No virtual environment found at $VENV_DIR"
+        echo "         Run 'make bootstrap' or 'make venv' to create one"
+    fi
+
     local REQUIRED_PYTHON=(
         "pandas"
         "numpy"
@@ -189,7 +232,7 @@ check_python() {
     for spec in "${REQUIRED_PYTHON[@]}"; do
         local module="${spec%%:*}"
         local pkg="${spec#*:}"
-        if python3 -c "import $module" 2>/dev/null; then
+        if "$PYTHON_CMD" -c "import $module" 2>/dev/null; then
             echo -e "  [${GREEN}OK${NC}] $module"
         else
             echo -e "  [${RED}MISSING${NC}] $module"
@@ -198,7 +241,7 @@ check_python() {
     done
 
     # Check babeltrace2
-    if python3 -c "import bt2" 2>/dev/null; then
+    if "$PYTHON_CMD" -c "import bt2" 2>/dev/null; then
         echo -e "  [${GREEN}OK${NC}] babeltrace2"
     else
         echo -e "  [${YELLOW}WARN${NC}] babeltrace2 (optional, for trace analysis)"
@@ -206,8 +249,13 @@ check_python() {
     fi
 
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        log_warn "Some Python packages missing. Install with:"
-        echo "  pip3 install --user ${missing_pkgs[*]}"
+        log_warn "Some Python packages missing."
+        if [ -f "$VENV_DIR/bin/pip" ]; then
+            echo "  Install with: $VENV_DIR/bin/pip install ${missing_pkgs[*]}"
+        else
+            echo "  Create venv first: make venv"
+            echo "  Then install: .venv/bin/pip install ${missing_pkgs[*]}"
+        fi
     fi
 
     return 0
@@ -246,7 +294,7 @@ build_workspace() {
     # Install rosdep dependencies (if rosdep available)
     if command -v rosdep &>/dev/null; then
         log_info "Installing rosdep dependencies..."
-        rosdep install --from-paths src --ignore-src -y --rosdistro=jazzy 2>/dev/null || true
+        rosdep install --from-paths src --ignore-src -y --rosdistro="${ROS_DISTRO:-jazzy}" 2>/dev/null || true
     fi
 
     # Build with colcon

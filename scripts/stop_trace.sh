@@ -84,11 +84,39 @@ if ! lttng list | grep -q "^$SESSION_NAME "; then
     exit 1
 fi
 
+# Get output path before stopping (for verification)
+OUTPUT_PATH=$(lttng list "$SESSION_NAME" 2>/dev/null | grep "Trace path:" | awk -F': ' '{print $2}' || echo "")
+
 # Stop and destroy
 log_info "Stopping trace session: $SESSION_NAME"
 lttng stop "$SESSION_NAME"
 
 log_info "Destroying session..."
 lttng destroy "$SESSION_NAME"
+
+# Verify trace was written
+if [[ -n "$OUTPUT_PATH" ]] && [[ -d "$OUTPUT_PATH" ]]; then
+    # Record stop time
+    echo "$(date -Iseconds)" > "$OUTPUT_PATH/.trace_stop_time"
+
+    # Check for metadata file (indicates valid trace data)
+    METADATA_FOUND=false
+    if [[ -f "$OUTPUT_PATH/metadata" ]]; then
+        METADATA_FOUND=true
+    elif find "$OUTPUT_PATH" -name "metadata" -type f 2>/dev/null | grep -q .; then
+        METADATA_FOUND=true
+    fi
+
+    if [[ "$METADATA_FOUND" = true ]]; then
+        # Calculate trace size
+        TRACE_SIZE=$(du -sh "$OUTPUT_PATH" 2>/dev/null | cut -f1 || echo "unknown")
+        log_info "Trace verified: $OUTPUT_PATH ($TRACE_SIZE)"
+    else
+        log_warn "Trace directory exists but no metadata found - trace may be empty"
+        log_warn "Check that ROS 2 tracing was enabled: ros2 topic info /rosout --verbose"
+    fi
+else
+    log_warn "Could not verify trace output path"
+fi
 
 log_info "Trace session $SESSION_NAME stopped and saved"

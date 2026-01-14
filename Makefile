@@ -10,16 +10,27 @@ WS_ROOT := $(shell pwd)
 NUM_TRIALS ?= 10
 SMOKE_TRIALS ?= 1
 
-# ROS setup
-ROS_SETUP := source /opt/ros/jazzy/setup.bash 2>/dev/null || true; \
+# Python virtual environment (PEP 668 compliant)
+VENV_DIR := $(WS_ROOT)/.venv
+PYTHON := $(VENV_DIR)/bin/python3
+PIP := $(VENV_DIR)/bin/pip
+
+# ROS setup - dynamic detection (supports jazzy, humble, iron, rolling)
+ROS_SETUP := for d in jazzy humble iron rolling; do \
+               if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
+             done; \
              source $(WS_ROOT)/install/setup.bash 2>/dev/null || true
+
+# Combined environment setup (ROS + venv)
+ENV_SETUP := $(ROS_SETUP); \
+             if [ -f "$(VENV_DIR)/bin/activate" ]; then source "$(VENV_DIR)/bin/activate"; fi
 
 .PHONY: all bootstrap setup build clean smoke_test \
         run_baseline run_cpu_load run_msg_load run_all \
         analyze_all report help \
         sweep_cpu sweep_msg find_breaking \
         analyze_paths validate_weights hardware_info \
-        jupyter full_report check_deps
+        jupyter full_report check_deps venv deps
 
 # Default target
 all: help
@@ -71,6 +82,29 @@ clean:
 ## Deep clean (including traces and results)
 distclean: clean
 	rm -rf traces results analysis/output
+
+#------------------------------------------------------------------------------
+# Python Virtual Environment
+#------------------------------------------------------------------------------
+
+## Create Python virtual environment (PEP 668 compliant)
+venv: $(VENV_DIR)/bin/activate
+
+$(VENV_DIR)/bin/activate:
+	@echo "=== Creating Python Virtual Environment ==="
+	python3 -m venv $(VENV_DIR)
+	$(PIP) install --upgrade pip
+	@if [ -f requirements.txt ]; then $(PIP) install -r requirements.txt; fi
+	@echo "Virtual environment created at $(VENV_DIR)"
+	@echo "Activate with: source $(VENV_DIR)/bin/activate"
+
+## Install Python dependencies into venv
+deps: venv
+	@echo "=== Installing Python Dependencies ==="
+	$(PIP) install pandas numpy scipy matplotlib seaborn pyyaml bokeh statsmodels
+	$(PIP) install babeltrace2 || echo "Warning: babeltrace2 pip install failed, use system python3-bt2"
+	$(PIP) freeze > requirements.txt
+	@echo "Dependencies installed. Requirements saved to requirements.txt"
 
 #------------------------------------------------------------------------------
 # Smoke Test (quick validation, <60 seconds)
@@ -129,6 +163,7 @@ report: analyze_all
 	@if [ -f "$(WS_ROOT)/analysis/output/combined_summary.csv" ]; then \
 		echo ""; \
 		echo "=== Summary Statistics ==="; \
+		$(ENV_SETUP); \
 		python3 -c "import pandas as pd; \
 			df = pd.read_csv('$(WS_ROOT)/analysis/output/combined_summary.csv'); \
 			print(df.groupby('scenario')[['planning_latency_ms','execution_latency_ms','total_latency_ms']].describe().round(2))"; \
@@ -151,12 +186,15 @@ acceptance_test:
 	@# Test 3: stress-ng available
 	@echo -n "Test: stress-ng available... "
 	@command -v stress-ng >/dev/null 2>&1 && echo "PASS" || { echo "FAIL (optional)"; }
-	@# Test 4: Python dependencies
+	@# Test 4: Python venv
+	@echo -n "Test: Python venv exists... "
+	@[ -f "$(VENV_DIR)/bin/python3" ] && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
+	@# Test 5: Python dependencies (using venv)
 	@echo -n "Test: Python babeltrace2... "
-	@python3 -c "import bt2" 2>/dev/null && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
+	@$(VENV_DIR)/bin/python3 -c "import bt2" 2>/dev/null && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
 	@echo -n "Test: Python pandas... "
-	@python3 -c "import pandas" 2>/dev/null && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
-	@# Test 5: Scripts executable
+	@$(VENV_DIR)/bin/python3 -c "import pandas" 2>/dev/null && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
+	@# Test 6: Scripts executable
 	@echo -n "Test: Scripts executable... "
 	@[ -x scripts/run_experiment_suite.sh ] && echo "PASS" || { echo "FAIL"; FAIL=$$((FAIL+1)); }
 	@# Summary
@@ -183,7 +221,7 @@ sweep_msg:
 ## Find breaking point for CPU load
 find_breaking:
 	@echo "=== Finding CPU load breaking point ==="
-	$(ROS_SETUP)
+	$(ENV_SETUP)
 	python3 scripts/find_breaking_point.py \
 		--param cpu_load_percent \
 		--low 50 --high 100 \
@@ -198,6 +236,7 @@ find_breaking:
 ## Run end-to-end path analysis
 analyze_paths:
 	@echo "=== Running path analysis ==="
+	$(ENV_SETUP)
 	python3 analysis/e2e_path_analyzer.py \
 		--trace-dir traces/ \
 		--output analysis/output/paths
@@ -205,6 +244,7 @@ analyze_paths:
 ## Run sweep analysis on results
 analyze_sweep:
 	@echo "=== Running sweep analysis ==="
+	$(ENV_SETUP)
 	python3 analysis/sweep_analysis.py \
 		--results results/*/ \
 		--output analysis/output
@@ -212,6 +252,7 @@ analyze_sweep:
 ## Validate objective weights against data
 validate_weights:
 	@echo "=== Validating objective weights ==="
+	$(ENV_SETUP)
 	python3 analysis/validate_weights.py \
 		--objectives configs/objectives.yaml \
 		--baseline results/baseline \
@@ -230,6 +271,7 @@ hardware_info:
 ## Launch Jupyter notebook server
 jupyter:
 	@echo "=== Starting Jupyter notebook ==="
+	$(ENV_SETUP)
 	cd notebooks && jupyter notebook
 
 ## Generate full report (all analysis + LaTeX compile)

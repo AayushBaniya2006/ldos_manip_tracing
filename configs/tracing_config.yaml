@@ -3,7 +3,9 @@
 
 session:
   name_prefix: "ldos_trace"
-  output_base: "~/ldos_manip_tracing/traces"
+  # Use relative path - scripts resolve from WS_ROOT
+  # Note: Tilde (~) does not expand in YAML, use relative or absolute paths
+  output_base: "./traces"
 
 # ROS 2 userspace tracepoints (via ros2trace)
 ros2_events:

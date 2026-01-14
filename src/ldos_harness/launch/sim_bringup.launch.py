@@ -15,6 +15,7 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
@@ -56,11 +57,42 @@ def generate_launch_description():
             description="World file to load (empty for default)",
         )
     )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "gz_plugin_path",
+            default_value="/opt/ros/jazzy/lib",
+            description="Path to Gazebo system plugins (gz_ros2_control)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "spawn_delay",
+            default_value="3.0",
+            description="Delay before spawning robot (seconds)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "controller_delay",
+            default_value="5.0",
+            description="Delay before loading controllers (seconds)",
+        )
+    )
 
     # Get configurations
     use_sim_time = LaunchConfiguration("use_sim_time")
     headless = LaunchConfiguration("headless")
     world = LaunchConfiguration("world")
+    gz_plugin_path = LaunchConfiguration("gz_plugin_path")
+    spawn_delay = LaunchConfiguration("spawn_delay")
+    controller_delay = LaunchConfiguration("controller_delay")
+
+    # Set Gazebo plugin path environment variable
+    # This ensures gz_ros2_control plugin can be found
+    set_gz_plugin_path = SetEnvironmentVariable(
+        name="GZ_SIM_SYSTEM_PLUGIN_PATH",
+        value=gz_plugin_path,
+    )
 
     # Find package paths
     pkg_ldos_harness = get_package_share_directory("ldos_harness")
@@ -177,6 +209,8 @@ def generate_launch_description():
     return LaunchDescription(
         declared_arguments
         + [
+            # Set plugin path before starting Gazebo
+            set_gz_plugin_path,
             robot_state_publisher,
             gz_sim,
             clock_bridge,

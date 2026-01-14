@@ -20,6 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Configurable parameters
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
+INIT_WAIT="${INIT_WAIT:-20}"
+BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
+
 # Arguments
 SCENARIO="${1:-baseline}"
 TRIAL_NUM="${2:-001}"
@@ -74,11 +79,24 @@ trap cleanup EXIT
 
 # Source ROS (disable -u temporarily for ROS setup scripts)
 set +u
-if [ -f /opt/ros/jazzy/setup.bash ]; then
-    source /opt/ros/jazzy/setup.bash
+ROS_FOUND=false
+for distro in jazzy humble iron rolling; do
+    if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+        source "/opt/ros/${distro}/setup.bash"
+        ROS_FOUND=true
+        break
+    fi
+done
+if [ "$ROS_FOUND" = false ]; then
+    log_error "No ROS 2 installation found in /opt/ros/"
+    exit 1
 fi
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
+fi
+# Activate venv if exists
+if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
+    source "$WS_ROOT/.venv/bin/activate"
 fi
 set -u
 
@@ -138,12 +156,12 @@ if [ "$SKIP_BRINGUP" != "true" ]; then
     STACK_PID=$!
 
     # Wait for stack to be ready
-    log_info "Waiting for stack to initialize (20s)..."
-    sleep 20
+    log_info "Waiting for stack to initialize (${INIT_WAIT}s)..."
+    sleep "$INIT_WAIT"
 
     # Verify MoveGroup is available
-    if ! ros2 action list 2>/dev/null | grep -q "move_action"; then
-        log_error "MoveGroup action not found. Stack may have failed to start."
+    if ! ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
+        log_error "MoveGroup action '$MOVEIT_ACTION_NAME' not found. Stack may have failed to start."
         exit 1
     fi
     log_info "Stack is ready"
@@ -178,7 +196,8 @@ ros2 run ldos_harness benchmark_runner.py \
     --trial-id "$TRIAL_ID" \
     --scenario "$SCENARIO" \
     --output-dir "$RESULT_DIR" \
-    --timeout 60.0 || BENCHMARK_EXIT=$?
+    --timeout "$BENCHMARK_TIMEOUT" \
+    --action-name "$MOVEIT_ACTION_NAME" || BENCHMARK_EXIT=$?
 
 # Stop tracing
 log_section "Stopping Tracing"

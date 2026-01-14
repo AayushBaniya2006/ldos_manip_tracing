@@ -69,11 +69,18 @@ lttng add-context --userspace --type=vpid --type=vtid --type=procname 2>/dev/nul
 log_info "Starting trace..."
 lttng start
 
+# Verify session is active
+if ! lttng list "$SESSION_NAME" 2>/dev/null | grep -q "Tracing session.*ACTIVE"; then
+    log_error "Failed to start tracing session"
+    lttng destroy "$SESSION_NAME" 2>/dev/null || true
+    exit 1
+fi
+
 # Save session info
 echo "$SESSION_NAME" > "$OUTPUT_DIR/.session_name"
 echo "$(date -Iseconds)" > "$OUTPUT_DIR/.trace_start_time"
 
-log_info "Tracing started. Session: $SESSION_NAME"
+log_info "Tracing started and verified. Session: $SESSION_NAME"
 log_info "To stop: ./scripts/stop_trace.sh $SESSION_NAME"
 
 # Output for scripting

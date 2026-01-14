@@ -18,11 +18,18 @@ Requirements:
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Set matplotlib backend BEFORE importing pyplot
+# This ensures compatibility with headless CloudLab nodes
+import matplotlib
+if not os.environ.get('DISPLAY'):
+    matplotlib.use('Agg')  # Non-interactive backend for headless operation
 
 import matplotlib.pyplot as plt
 import numpy as np

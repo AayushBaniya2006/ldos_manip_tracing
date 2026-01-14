@@ -47,6 +47,12 @@ LOG_FILE="${WS_ROOT}/bootstrap_$(date +%Y%m%d_%H%M%S).log"
 ROS_DISTRO="jazzy"
 UBUNTU_CODENAME="noble"
 
+# Python virtual environment (PEP 668 compliant)
+VENV_DIR="${WS_ROOT}/.venv"
+
+# Track if tracing group was newly added (for better user guidance)
+TRACING_GROUP_CHANGED=false
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -328,9 +334,14 @@ phase5_lttng_install() {
         sudo groupadd tracing || true
     fi
 
-    # Add current user to tracing group
-    log_info "Adding user '$USER' to 'tracing' group..."
-    sudo usermod -aG tracing "$USER" || true
+    # Add current user to tracing group (track if changed)
+    if ! id -nG "$USER" | grep -qw tracing; then
+        log_info "Adding user '$USER' to 'tracing' group..."
+        sudo usermod -aG tracing "$USER" || true
+        TRACING_GROUP_CHANGED=true
+    else
+        log_info "User '$USER' already in 'tracing' group"
+    fi
 
     # Set permissions for LTTng
     log_info "Configuring LTTng permissions..."
@@ -340,7 +351,25 @@ phase5_lttng_install() {
     fi
 
     log_info "Phase 5 complete."
-    log_warn "NOTE: You must log out and back in for tracing group membership to take effect"
+
+    # Show prominent warning if group was newly added
+    if [ "$TRACING_GROUP_CHANGED" = true ]; then
+        echo ""
+        log_warn "============================================================"
+        log_warn "IMPORTANT: Tracing group membership requires logout/login"
+        log_warn "============================================================"
+        log_warn ""
+        log_warn "The 'tracing' group was added but won't be active until you:"
+        log_warn "  1. Complete this bootstrap script"
+        log_warn "  2. Log out completely (exit SSH or terminal)"
+        log_warn "  3. Log back in"
+        log_warn ""
+        log_warn "Alternatively, after bootstrap completes, run:"
+        log_warn "  newgrp tracing"
+        log_warn "  # Then run: make smoke_test"
+        log_warn "============================================================"
+        echo ""
+    fi
 }
 
 ###############################################################################
@@ -350,12 +379,26 @@ phase5_lttng_install() {
 phase6_python_deps() {
     log_step "=== PHASE 6: Python Dependencies ==="
 
+    # Create virtual environment if it doesn't exist (PEP 668 compliant)
+    if [ ! -d "$VENV_DIR" ]; then
+        log_info "Creating Python virtual environment at $VENV_DIR..."
+        python3 -m venv "$VENV_DIR"
+    else
+        log_info "Virtual environment already exists at $VENV_DIR"
+    fi
+
+    # Activate virtual environment
+    log_info "Activating virtual environment..."
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+
+    # Upgrade pip within venv
+    log_info "Upgrading pip..."
+    pip install --upgrade pip
+
+    # Install packages into venv
     log_info "Installing Python packages for analysis..."
-
-    # Install via pip (user-level to avoid conflicts with system packages)
-    pip3 install --user --upgrade pip
-
-    pip3 install --user \
+    pip install \
         pandas \
         numpy \
         scipy \
@@ -364,18 +407,50 @@ phase6_python_deps() {
         pyyaml \
         jupyter \
         jupyterlab \
-        babeltrace2 \
         bokeh \
         statsmodels
 
-    # Verify critical packages
+    # Handle babeltrace2 - try pip first, fall back to system package symlink
+    log_info "Installing babeltrace2..."
+    if pip install babeltrace2 2>/dev/null; then
+        log_info "  babeltrace2 installed via pip"
+    else
+        log_warn "pip babeltrace2 failed, attempting system package symlink..."
+        # Check if system python3-bt2 is available
+        if python3 -c "import bt2" 2>/dev/null; then
+            SYSTEM_BT2_PATH=$(python3 -c "import bt2; import os; print(os.path.dirname(bt2.__file__))" 2>/dev/null) || true
+            VENV_SITE=$("$VENV_DIR/bin/python3" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null) || true
+            if [ -n "$SYSTEM_BT2_PATH" ] && [ -d "$SYSTEM_BT2_PATH" ] && [ -n "$VENV_SITE" ]; then
+                ln -sf "$SYSTEM_BT2_PATH" "$VENV_SITE/bt2" 2>/dev/null || true
+                # Also link _bt2 if it exists (C extension)
+                SYSTEM_BT2_SO=$(python3 -c "import _bt2; print(_bt2.__file__)" 2>/dev/null) || true
+                if [ -n "$SYSTEM_BT2_SO" ] && [ -f "$SYSTEM_BT2_SO" ]; then
+                    ln -sf "$SYSTEM_BT2_SO" "$VENV_SITE/" 2>/dev/null || true
+                fi
+                log_info "  Created symlink to system bt2 package"
+            fi
+        else
+            log_warn "  System python3-bt2 not available either"
+            log_warn "  Trace analysis may not work - install manually: sudo apt install python3-bt2"
+        fi
+    fi
+
+    # Create requirements.txt for reproducibility
+    log_info "Saving requirements.txt..."
+    pip freeze > "$WS_ROOT/requirements.txt"
+
+    # Deactivate for now (will be sourced via ~/.bashrc)
+    deactivate
+
+    # Verify critical packages using venv python
     log_info "Verifying Python packages..."
-    python3 -c "import pandas; print(f'  pandas {pandas.__version__}')"
-    python3 -c "import numpy; print(f'  numpy {numpy.__version__}')"
-    python3 -c "import matplotlib; print(f'  matplotlib {matplotlib.__version__}')"
-    python3 -c "import bt2; print('  babeltrace2 OK')" || log_warn "babeltrace2 not available via pip, using system bt2"
+    "$VENV_DIR/bin/python3" -c "import pandas; print(f'  pandas {pandas.__version__}')" || log_warn "pandas not available"
+    "$VENV_DIR/bin/python3" -c "import numpy; print(f'  numpy {numpy.__version__}')" || log_warn "numpy not available"
+    "$VENV_DIR/bin/python3" -c "import matplotlib; print(f'  matplotlib {matplotlib.__version__}')" || log_warn "matplotlib not available"
+    "$VENV_DIR/bin/python3" -c "import bt2; print('  babeltrace2 OK')" || log_warn "babeltrace2 not available"
 
     log_info "Phase 6 complete."
+    log_info "Virtual environment: $VENV_DIR"
 }
 
 ###############################################################################
@@ -406,13 +481,34 @@ phase8_environment() {
     # Check if already configured
     if grep -q "$BASHRC_MARKER" ~/.bashrc 2>/dev/null; then
         log_info "Environment already configured in ~/.bashrc"
-    else
-        log_info "Adding ROS 2 environment to ~/.bashrc..."
-        cat >> ~/.bashrc << 'EOF'
+        log_info "Removing old configuration to update..."
+        # Remove old configuration block
+        sed -i '/# LDOS Harness Environment/,/^$/d' ~/.bashrc 2>/dev/null || true
+    fi
+
+    log_info "Adding ROS 2 and venv environment to ~/.bashrc..."
+    cat >> ~/.bashrc << 'EOF'
 
 # LDOS Harness Environment
-source /opt/ros/jazzy/setup.bash
+# Detect ROS 2 installation dynamically (supports jazzy, humble, iron, rolling)
+ROS_FOUND=false
+for ros_distro in jazzy humble iron rolling; do
+    if [ -f "/opt/ros/${ros_distro}/setup.bash" ]; then
+        source "/opt/ros/${ros_distro}/setup.bash"
+        ROS_FOUND=true
+        break
+    fi
+done
+if [ "$ROS_FOUND" = false ]; then
+    echo "[WARN] No ROS 2 installation found in /opt/ros/"
+fi
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# Python virtual environment (auto-activate if exists)
+LDOS_VENV="$HOME/ldos_manip_tracing/.venv"
+if [ -d "$LDOS_VENV" ] && [ -f "$LDOS_VENV/bin/activate" ]; then
+    source "$LDOS_VENV/bin/activate"
+fi
 
 # Workspace setup (if exists)
 if [ -f ~/ldos_manip_tracing/install/setup.bash ]; then
@@ -421,8 +517,8 @@ fi
 
 # LTTng environment
 export LTTNG_HOME=~/.lttng
+
 EOF
-    fi
 
     # Source ROS 2 for current session (disable -u temporarily for ROS setup scripts)
     set +u
@@ -506,7 +602,8 @@ phase10_verify() {
 
     log_info "Verifying installation..."
 
-    verify "ROS 2 Jazzy" "[ -f /opt/ros/jazzy/setup.bash ]"
+    # Check for any ROS 2 installation
+    verify "ROS 2" "[ -f /opt/ros/jazzy/setup.bash ] || [ -f /opt/ros/humble/setup.bash ]"
     verify "ros2 command" "ros2 --help"
     verify "Gazebo" "gz sim --version"
     verify "MoveIt" "ros2 pkg list | grep -q moveit"
@@ -516,9 +613,12 @@ phase10_verify() {
     verify "tracetools" "ros2 pkg list | grep -q tracetools"
     verify "LTTng" "lttng --version"
     verify "stress-ng" "stress-ng --version"
-    verify "Python pandas" "python3 -c 'import pandas'"
-    verify "Python scipy" "python3 -c 'import scipy'"
-    verify "Python matplotlib" "python3 -c 'import matplotlib'"
+    # Use venv python for package verification
+    verify "Python venv" "[ -f '$VENV_DIR/bin/python3' ]"
+    verify "Python pandas" "'$VENV_DIR/bin/python3' -c 'import pandas'"
+    verify "Python scipy" "'$VENV_DIR/bin/python3' -c 'import scipy'"
+    verify "Python matplotlib" "'$VENV_DIR/bin/python3' -c 'import matplotlib'"
+    verify "Python babeltrace2" "'$VENV_DIR/bin/python3' -c 'import bt2'"
     verify "ldos_harness package" "ros2 pkg list | grep -q ldos_harness"
 
     echo ""
@@ -575,14 +675,28 @@ main() {
     echo ""
     echo "  Duration: $((DURATION / 60)) minutes $((DURATION % 60)) seconds"
     echo "  Log file: $LOG_FILE"
+    echo "  Python venv: $VENV_DIR"
     echo ""
-    echo "  IMPORTANT: Log out and back in for tracing group to take effect"
-    echo ""
-    echo "  Next steps:"
-    echo "    1. Log out and log back in (for tracing group)"
-    echo "    2. source ~/.bashrc"
-    echo "    3. cd ~/ldos_manip_tracing"
-    echo "    4. make smoke_test"
+    if [ "$TRACING_GROUP_CHANGED" = true ]; then
+        echo -e "  ${YELLOW}IMPORTANT: Tracing group requires logout/login${NC}"
+        echo ""
+        echo "  Next steps (RECOMMENDED):"
+        echo "    1. exit                  # Log out completely"
+        echo "    2. # SSH/login back in"
+        echo "    3. cd ~/ldos_manip_tracing"
+        echo "    4. source ~/.bashrc      # Activates ROS 2 + venv"
+        echo "    5. make smoke_test       # Verify everything works"
+        echo ""
+        echo "  Alternative (no logout required):"
+        echo "    newgrp tracing           # Activate tracing group"
+        echo "    source ~/.bashrc         # Activate ROS 2 + venv"
+        echo "    make smoke_test"
+    else
+        echo "  Next steps:"
+        echo "    1. source ~/.bashrc      # Activate ROS 2 + venv"
+        echo "    2. cd ~/ldos_manip_tracing"
+        echo "    3. make smoke_test       # Verify everything works"
+    fi
     echo ""
 }
 

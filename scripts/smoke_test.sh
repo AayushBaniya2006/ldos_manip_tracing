@@ -15,6 +15,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Configurable parameters
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
+INIT_WAIT="${INIT_WAIT:-25}"
+STACK_TIMEOUT="${STACK_TIMEOUT:-50}"
+BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-30}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,10 +41,23 @@ cleanup() {
 
     # Kill stack process group if running
     if [[ -n "$STACK_PID" ]]; then
+        # First, try to kill child processes
+        pkill -TERM -P "$STACK_PID" 2>/dev/null || true
+        sleep 1
         # Kill process group (negative PID)
         kill -TERM -"$STACK_PID" 2>/dev/null || true
         # Also kill by PID directly as fallback
         kill -TERM "$STACK_PID" 2>/dev/null || true
+        # Wait with timeout, then force kill if needed
+        local wait_count=0
+        while kill -0 "$STACK_PID" 2>/dev/null && [[ $wait_count -lt 5 ]]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+        if kill -0 "$STACK_PID" 2>/dev/null; then
+            log_warn "Force killing stack process..."
+            kill -9 "$STACK_PID" 2>/dev/null || true
+        fi
     fi
 
     # Kill any remaining ROS/Gazebo processes from this session
@@ -56,12 +75,18 @@ trap cleanup EXIT INT TERM
 
 # Source ROS environment
 source_ros() {
-    if [[ -f /opt/ros/jazzy/setup.bash ]]; then
-        source /opt/ros/jazzy/setup.bash
-    elif [[ -f /opt/ros/humble/setup.bash ]]; then
-        source /opt/ros/humble/setup.bash
-    else
-        log_error "ROS 2 installation not found"
+    local ros_found=false
+    for distro in jazzy humble iron rolling; do
+        if [[ -f "/opt/ros/${distro}/setup.bash" ]]; then
+            source "/opt/ros/${distro}/setup.bash"
+            log_info "Using ROS 2 $distro"
+            ros_found=true
+            break
+        fi
+    done
+
+    if [[ "$ros_found" = false ]]; then
+        log_error "ROS 2 installation not found in /opt/ros/"
         exit 1
     fi
 
@@ -70,6 +95,11 @@ source_ros() {
     else
         log_error "Workspace not built. Run 'make setup' first."
         exit 1
+    fi
+
+    # Activate venv if exists
+    if [[ -f "$WS_ROOT/.venv/bin/activate" ]]; then
+        source "$WS_ROOT/.venv/bin/activate"
     fi
 }
 
@@ -87,9 +117,9 @@ run_smoke_test() {
     mkdir -p "$RESULT_DIR"
 
     # Start the stack in a new process group
-    log_info "Starting full stack (timeout: 50s)..."
+    log_info "Starting full stack (timeout: ${STACK_TIMEOUT}s)..."
     set -m  # Enable job control for process groups
-    timeout 50 ros2 launch ldos_harness full_stack.launch.py \
+    timeout "$STACK_TIMEOUT" ros2 launch ldos_harness full_stack.launch.py \
         headless:=true \
         use_rviz:=false \
         2>&1 | tee "$RESULT_DIR/stack.log" &
@@ -99,8 +129,7 @@ run_smoke_test() {
     log_info "Stack PID: $STACK_PID"
 
     # Wait for initialization with progress
-    log_info "Waiting for stack initialization..."
-    INIT_WAIT=25
+    log_info "Waiting for stack initialization (${INIT_WAIT}s)..."
     for i in $(seq 1 $INIT_WAIT); do
         echo -n "."
         sleep 1
@@ -116,27 +145,28 @@ run_smoke_test() {
     log_pass "Stack is running"
 
     # Check MoveGroup action availability
-    log_info "Checking MoveGroup action availability..."
+    log_info "Checking MoveGroup action availability (looking for $MOVEIT_ACTION_NAME)..."
     ACTION_CHECK=$(ros2 action list 2>/dev/null || echo "")
-    if echo "$ACTION_CHECK" | grep -q "move_action"; then
-        log_pass "MoveGroup action available"
+    if echo "$ACTION_CHECK" | grep -q "$MOVEIT_ACTION_NAME"; then
+        log_pass "MoveGroup action available: $MOVEIT_ACTION_NAME"
     else
-        log_fail "MoveGroup action not found"
+        log_fail "MoveGroup action '$MOVEIT_ACTION_NAME' not found"
         log_info "Available actions:"
         echo "$ACTION_CHECK"
         exit 1
     fi
 
     # Run benchmark
-    log_info "Running benchmark trial (timeout: 30s)..."
+    log_info "Running benchmark trial (timeout: ${BENCHMARK_TIMEOUT}s)..."
     TRIAL_ID="smoke_test_$(date +%s)"
 
     set +e  # Don't exit on benchmark failure
-    timeout 30 ros2 run ldos_harness benchmark_runner.py \
+    timeout "$BENCHMARK_TIMEOUT" ros2 run ldos_harness benchmark_runner.py \
         --trial-id "$TRIAL_ID" \
         --scenario smoke \
         --output-dir "$RESULT_DIR" \
         --timeout 25.0 \
+        --action-name "$MOVEIT_ACTION_NAME" \
         2>&1 | tee "$RESULT_DIR/benchmark.log"
     BENCH_EXIT=$?
     set -e

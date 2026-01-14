@@ -25,12 +25,75 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import warnings
 
-try:
-    import bt2
-except ImportError:
-    print("ERROR: babeltrace2 not installed. Install with: pip install babeltrace2")
-    print("Or: sudo apt install python3-babeltrace2")
-    sys.exit(1)
+def check_babeltrace2_import():
+    """Check for babeltrace2 with helpful error messages."""
+    try:
+        import bt2
+        return bt2
+    except ImportError as e:
+        import subprocess
+
+        error_lines = [
+            "=" * 60,
+            "ERROR: babeltrace2 Python bindings not found",
+            "=" * 60,
+            "",
+            f"Import error: {e}",
+            "",
+            "This is required for LTTng trace analysis.",
+            "",
+            "Installation options:",
+            "",
+            "  Option 1 - System package (Ubuntu/Debian):",
+            "    sudo apt install python3-babeltrace2",
+            "",
+            "  Option 2 - pip (may require build dependencies):",
+            "    pip install babeltrace2",
+            "",
+        ]
+
+        # Check if we're in a virtualenv
+        in_venv = hasattr(sys, 'real_prefix') or (
+            hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix
+        )
+        if in_venv:
+            venv_path = sys.prefix
+            error_lines.extend([
+                f"  NOTE: You are in a virtualenv: {venv_path}",
+                "",
+                "  Option 3 - If using virtualenv without system packages:",
+                "    Recreate venv with system site-packages access:",
+                "    python3 -m venv --system-site-packages .venv",
+                "    source .venv/bin/activate",
+                "",
+                "  Or try running with system Python:",
+                "    deactivate",
+                "    /usr/bin/python3 analyze_trace.py ...",
+                "",
+            ])
+
+        # Check if system package exists but not accessible
+        try:
+            result = subprocess.run(
+                ['dpkg', '-s', 'python3-babeltrace2'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                error_lines.extend([
+                    "  INFO: python3-babeltrace2 is installed on the system",
+                    "  but not accessible to this Python interpreter.",
+                    f"  Current Python: {sys.executable}",
+                    "",
+                ])
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # Not on Debian-based system or command failed
+
+        for line in error_lines:
+            print(line, file=sys.stderr)
+        sys.exit(1)
+
+
+bt2 = check_babeltrace2_import()
 
 import pandas as pd
 
