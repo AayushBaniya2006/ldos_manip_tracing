@@ -1,22 +1,37 @@
 # MoveIt 2 Jazzy Configuration for move_group node
-# This file ensures proper parameter typing (especially string arrays)
+# CRITICAL: Uses Jazzy parameter format (arrays, new namespaces)
+#
+# Key changes from Humble to Jazzy:
+# - planning_plugin → planning_plugins (array)
+# - default_planner_* → default_planning_* namespace
+# - Fix* adapters → Check*/Validate* adapters
+# - AddTimeOptimalParameterization moved to response_adapters
+# - response_adapters section is now required
 
 # Planning pipeline configuration
 planning_pipelines:
   - ompl
 default_planning_pipeline: ompl
 
-# OMPL pipeline configuration
-# NOTE: request_adapters MUST be a string array, not a multiline string
+# OMPL pipeline configuration (MoveIt 2 Jazzy format)
 ompl:
-  planning_plugin: ompl_interface/OMPLPlanner
+  # MUST be array (planning_plugins not planning_plugin)
+  planning_plugins:
+    - ompl_interface/OMPLPlanner
+
+  # Request adapters (pre-processing) - note "planning" not "planner"
   request_adapters:
-    - default_planner_request_adapters/AddTimeOptimalParameterization
-    - default_planner_request_adapters/ResolveConstraintFrames
-    - default_planner_request_adapters/FixWorkspaceBounds
-    - default_planner_request_adapters/FixStartStateBounds
-    - default_planner_request_adapters/FixStartStateCollision
-    - default_planner_request_adapters/FixStartStatePathConstraints
+    - default_planning_request_adapters/ResolveConstraintFrames
+    - default_planning_request_adapters/ValidateWorkspaceBounds
+    - default_planning_request_adapters/CheckStartStateBounds
+    - default_planning_request_adapters/CheckStartStateCollision
+
+  # Response adapters (post-processing) - NEW in Jazzy
+  response_adapters:
+    - default_planning_response_adapters/AddTimeOptimalParameterization
+    - default_planning_response_adapters/ValidateSolution
+    - default_planning_response_adapters/DisplayMotionPath
+
   start_state_max_bounds_error: 0.1
 
 # Kinematics configuration (robot_description_kinematics namespace)
