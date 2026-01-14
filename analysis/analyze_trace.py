@@ -150,6 +150,11 @@ class TraceMetrics:
 
         durations_ms = [d / 1e6 for d in self.callback_durations_ns]
         n = len(durations_ms)
+
+        # Warn if sample size is low for reliable percentiles
+        if n < 100:
+            print(f"WARNING: Only {n} callbacks recorded. Percentile statistics may be unreliable.")
+
         sorted_durations = sorted(durations_ms)
 
         self.callback_duration_mean_ms = sum(durations_ms) / n
@@ -246,6 +251,14 @@ class TraceAnalyzer:
         self.metrics.compute_aggregates()
 
         print(f"Processed {event_count} events")
+
+        # Document which event types are actually analyzed
+        ANALYZED_EVENTS = [
+            'ros2:callback_start', 'ros2:callback_end', 'ros2:rclcpp_callback_register',
+            'ros2:rcl_node_init', 'ros2:rcl_publisher_init', 'ros2:rcl_subscription_init',
+            'sched_switch', 'sched_wakeup'
+        ]
+        print(f"Note: Analyzing {len(ANALYZED_EVENTS)} event types. Other enabled events are ignored.")
 
         # Warn if trace appears empty or has no callback events
         if event_count == 0:

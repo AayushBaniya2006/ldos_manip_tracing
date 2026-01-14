@@ -21,7 +21,7 @@ WARMUP_TRIALS=2
 COOLDOWN_SECONDS=10       # Between trials (increased from 5 for stability)
 SCENARIO_COOLDOWN=30      # Between scenarios (allow full system cooldown)
 MAX_RETRIES=2  # Retry failed trials up to this many times
-MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-/move_action}"
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
 
 # Colors

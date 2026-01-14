@@ -113,7 +113,7 @@ class BenchmarkRunner(Node):
     """ROS 2 node for running MoveIt benchmarks."""
 
     def __init__(self, trial_id: str, scenario: str, output_dir: Path,
-                 action_name: str = 'move_action'):
+                 action_name: str = '/move_action'):
         super().__init__('benchmark_runner')
         self.trial_id = trial_id
         self.scenario = scenario
@@ -137,7 +137,7 @@ class BenchmarkRunner(Node):
         self.get_logger().info(f'Waiting for MoveGroup action server on "{action_name}"...')
         if not self._move_group_client.wait_for_server(timeout_sec=60.0):
             self.result.status = "error"
-            self.result.error_message = "MoveGroup action server not available after 30s"
+            self.result.error_message = f"MoveGroup action server '{action_name}' not available after 60s"
             raise RuntimeError(self.result.error_message)
 
         self.get_logger().info('MoveGroup action server connected')
@@ -381,8 +381,8 @@ def main():
     parser.add_argument('--goal-x', type=float, default=0.4, help='Goal position X')
     parser.add_argument('--goal-y', type=float, default=0.2, help='Goal position Y')
     parser.add_argument('--goal-z', type=float, default=0.5, help='Goal position Z')
-    parser.add_argument('--action-name', default='move_action',
-                        help='MoveGroup action name (default: move_action)')
+    parser.add_argument('--action-name', default='/move_action',
+                        help='MoveGroup action name (default: /move_action)')
 
     args = parser.parse_args()
 
