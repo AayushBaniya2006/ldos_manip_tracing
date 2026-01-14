@@ -74,19 +74,8 @@ def launch_setup(context, *args, **kwargs):
         "robot_description_semantic": robot_description_semantic_content
     }
 
-    # Kinematics configuration (loaded from YAML for proper typing)
-    kinematics_yaml = load_yaml("ldos_harness", "config/kinematics.yaml")
-    if kinematics_yaml is None:
-        kinematics_yaml = {
-            "panda_arm": {
-                "kinematics_solver": "kdl_kinematics_plugin/KDLKinematicsPlugin",
-                "kinematics_solver_search_resolution": 0.005,
-                "kinematics_solver_timeout": 0.05,
-            }
-        }
-
     # MoveIt configuration (loaded from YAML to ensure proper string_array typing)
-    # This includes planning_pipelines, trajectory execution, controllers, etc.
+    # This includes planning_pipelines, kinematics, controllers, trajectory execution, etc.
     moveit_config_yaml = load_yaml("ldos_harness", "config/moveit.yaml")
     if moveit_config_yaml is None:
         # Fallback config - should not happen if package is built correctly
@@ -103,7 +92,6 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            kinematics_yaml,
             moveit_config_yaml,
             {"use_sim_time": True},
         ],
@@ -123,7 +111,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            kinematics_yaml,
+            moveit_config_yaml,
             {"use_sim_time": True},
         ],
         condition=IfCondition(use_rviz),
