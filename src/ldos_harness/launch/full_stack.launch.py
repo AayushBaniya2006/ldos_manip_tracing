@@ -46,7 +46,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "moveit_delay",
-            default_value="12.0",
+            default_value="25.0",  # Increased from 12.0 for reliability under load
             description="Seconds to wait before starting MoveIt (allow sim to stabilize)",
         )
     )

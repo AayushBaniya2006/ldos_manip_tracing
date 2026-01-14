@@ -24,13 +24,20 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def load_yaml(package_name, file_path):
-    """Load a yaml file from a package."""
+    """Load a yaml file from a package with error logging."""
     package_path = get_package_share_directory(package_name)
     absolute_file_path = os.path.join(package_path, file_path)
     try:
         with open(absolute_file_path, "r") as file:
             return yaml.safe_load(file)
+    except FileNotFoundError:
+        print(f"WARNING: Config file not found: {absolute_file_path}")
+        return None
+    except yaml.YAMLError as e:
+        print(f"WARNING: YAML parse error in {absolute_file_path}: {e}")
+        return None
     except Exception as e:
+        print(f"WARNING: Failed to load {absolute_file_path}: {e}")
         return None
 
 
@@ -39,6 +46,9 @@ def launch_setup(context, *args, **kwargs):
     use_rviz = LaunchConfiguration("use_rviz")
 
     pkg_ldos_harness = get_package_share_directory("ldos_harness")
+
+    # Evaluate use_sim_time for use in parameters
+    use_sim_time_bool = use_sim_time.perform(context).lower() == "true"
 
     # Robot description (must match sim_bringup)
     robot_description_content = ParameterValue(
@@ -50,7 +60,8 @@ def launch_setup(context, *args, **kwargs):
                     [pkg_ldos_harness, "config", "panda_gz.urdf.xacro"]
                 ),
                 " ",
-                "use_sim_time:=true",
+                "use_sim_time:=",
+                use_sim_time,
             ]
         ),
         value_type=str,
@@ -93,7 +104,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
             moveit_config_yaml,
-            {"use_sim_time": True},
+            {"use_sim_time": use_sim_time_bool},
         ],
     )
 
@@ -112,7 +123,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
             moveit_config_yaml,
-            {"use_sim_time": True},
+            {"use_sim_time": use_sim_time_bool},
         ],
         condition=IfCondition(use_rviz),
     )

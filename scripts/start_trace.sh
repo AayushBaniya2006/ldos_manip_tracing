@@ -35,10 +35,11 @@ if ! groups | grep -q tracing; then
     log_warn "Add with: sudo usermod -aG tracing $USER && newgrp tracing"
 fi
 
-# Check if session already exists
-if lttng list | grep -q "^$SESSION_NAME "; then
+# Check if session already exists (use more reliable pattern)
+if lttng list 2>/dev/null | grep -qE "^${SESSION_NAME}[[:space:]]"; then
     log_warn "Session $SESSION_NAME already exists. Destroying..."
     lttng destroy "$SESSION_NAME" 2>/dev/null || true
+    sleep 1  # Allow cleanup to complete
 fi
 
 # Create output directory
@@ -49,21 +50,30 @@ log_info "Trace output: $OUTPUT_DIR"
 log_info "Creating LTTng session: $SESSION_NAME"
 lttng create "$SESSION_NAME" --output="$OUTPUT_DIR"
 
-# Enable ROS 2 userspace events
+# Create channel with 64MB buffer (8 subbuffers x 8MB each) to prevent overflow under load
+log_info "Creating userspace channel with 64MB buffer..."
+lttng enable-channel -s "$SESSION_NAME" --userspace ldos_channel \
+    --buffers-uid \
+    --subbuf-size=8388608 \
+    --num-subbuf=8 || log_warn "Failed to create custom channel, using defaults"
+
+# Enable ROS 2 userspace events on the channel
 log_info "Enabling ROS 2 tracepoints..."
-lttng enable-event --userspace 'ros2:*' || log_warn "Some ros2 events may not be available"
+lttng enable-event -s "$SESSION_NAME" -c ldos_channel --userspace 'ros2:*' 2>/dev/null || \
+    lttng enable-event -s "$SESSION_NAME" --userspace 'ros2:*' || \
+    log_warn "Some ros2 events may not be available"
 
 # Try to enable kernel events (may fail without permissions)
 log_info "Enabling kernel scheduler events..."
-if lttng enable-event --kernel sched_switch,sched_wakeup,sched_process_fork 2>/dev/null; then
+if lttng enable-event -s "$SESSION_NAME" --kernel sched_switch,sched_wakeup,sched_process_fork 2>/dev/null; then
     log_info "Kernel events enabled"
 else
     log_warn "Kernel events not available (need root or tracing group)"
 fi
 
-# Add context fields
+# Add context fields with session specification
 log_info "Adding context fields..."
-lttng add-context --userspace --type=vpid --type=vtid --type=procname 2>/dev/null || true
+lttng add-context -s "$SESSION_NAME" --userspace --type=vpid --type=vtid --type=procname 2>/dev/null || true
 
 # Start tracing
 log_info "Starting trace..."

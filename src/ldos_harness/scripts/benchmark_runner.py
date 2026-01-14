@@ -52,10 +52,18 @@ from std_msgs.msg import Header
 
 @dataclass
 class TimingMarker:
-    """A single timing event marker."""
+    """A single timing event marker with dual timestamps."""
     name: str
-    timestamp_ns: int
-    wall_time: float  # seconds since epoch
+    wall_time_ns: int      # Wall clock nanoseconds (time.time_ns())
+    ros_time_ns: int       # ROS clock nanoseconds (node.get_clock().now())
+    wall_time: float       # Wall clock seconds (for backwards compat)
+    # Legacy field for compatibility
+    timestamp_ns: int = 0  # Deprecated, use wall_time_ns
+
+    def __post_init__(self):
+        # For backwards compatibility, set timestamp_ns from wall_time_ns
+        if self.timestamp_ns == 0:
+            self.timestamp_ns = self.wall_time_ns
 
 
 @dataclass
@@ -127,7 +135,7 @@ class BenchmarkRunner(Node):
 
         # Wait for action server
         self.get_logger().info(f'Waiting for MoveGroup action server on "{action_name}"...')
-        if not self._move_group_client.wait_for_server(timeout_sec=30.0):
+        if not self._move_group_client.wait_for_server(timeout_sec=60.0):
             self.result.status = "error"
             self.result.error_message = "MoveGroup action server not available after 30s"
             raise RuntimeError(self.result.error_message)
@@ -148,15 +156,17 @@ class BenchmarkRunner(Node):
         self.planner_id = "RRTConnect"
 
     def add_marker(self, name: str):
-        """Record a timing marker."""
-        now = time.time()
+        """Record a timing marker with both wall clock and ROS clock timestamps."""
+        wall_now = time.time()
+        ros_now = self.get_clock().now()
         marker = TimingMarker(
             name=name,
-            timestamp_ns=int(now * 1e9),
-            wall_time=now
+            wall_time_ns=int(wall_now * 1e9),
+            ros_time_ns=ros_now.nanoseconds,
+            wall_time=wall_now
         )
         self.markers.append(marker)
-        self.get_logger().debug(f'Marker: {name} at {now}')
+        self.get_logger().debug(f'Marker: {name} wall={wall_now:.6f}s ros={ros_now.nanoseconds}ns')
 
     def run_benchmark(self, timeout: float = 60.0) -> TrialResult:
         """Execute the benchmark trial."""
@@ -167,9 +177,10 @@ class BenchmarkRunner(Node):
             # Create motion plan request
             goal_msg = self._create_move_goal()
 
-            # Send goal
+            # Send goal - planning starts immediately when goal is sent
             self.add_marker('goal_sent')
             self.result.t_goal_sent = time.time()
+            self.result.t_planning_start = time.time()  # Planning starts at goal send
 
             send_goal_future = self._move_group_client.send_goal_async(
                 goal_msg,
@@ -192,7 +203,7 @@ class BenchmarkRunner(Node):
                 return self._finalize_result()
 
             self.add_marker('goal_accepted')
-            self.result.t_planning_start = time.time()
+            # Note: t_planning_start already set at goal send time
 
             # Wait for result
             result_future = goal_handle.get_result_async()
@@ -329,8 +340,11 @@ class BenchmarkRunner(Node):
             self.add_marker('planning_started')
         elif state == "MONITOR":
             self.add_marker('execution_started')
-            self.result.t_planning_end = time.time()
-            self.result.t_execution_start = time.time()
+            # Only set timing values if not already set (avoid overwriting)
+            if self.result.t_planning_end == 0.0:
+                self.result.t_planning_end = time.time()
+            if self.result.t_execution_start == 0.0:
+                self.result.t_execution_start = time.time()
 
     def _finalize_result(self) -> TrialResult:
         """Finalize and save the trial result."""

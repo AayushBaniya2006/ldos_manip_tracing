@@ -18,7 +18,8 @@ WS_ROOT="$(dirname "$SCRIPT_DIR")"
 NUM_TRIALS="${1:-10}"
 SCENARIOS="${2:-baseline,cpu_load,msg_load}"
 WARMUP_TRIALS=2
-COOLDOWN_SECONDS=5
+COOLDOWN_SECONDS=10       # Between trials (increased from 5 for stability)
+SCENARIO_COOLDOWN=30      # Between scenarios (allow full system cooldown)
 MAX_RETRIES=2  # Retry failed trials up to this many times
 MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
@@ -164,17 +165,25 @@ run_scenario() {
     ros2 launch ldos_harness full_stack.launch.py headless:=true use_rviz:=false &
     STACK_PID=$!
 
-    # Wait for stack to initialize with polling (timeout: 120s)
+    # Wait for stack to initialize with polling and exponential backoff (timeout: 120s)
     log_info "Waiting for stack to initialize (polling, max 120s)..."
     STACK_TIMEOUT=120
-    STACK_POLL_INTERVAL=5
+    STACK_POLL_INTERVAL=2      # Start with 2s polling (reduced from 5s)
+    STACK_POLL_MAX=10          # Max polling interval
     STACK_ELAPSED=0
+    STACK_FULLY_READY=false
 
     while [ $STACK_ELAPSED -lt $STACK_TIMEOUT ]; do
         # Check if MoveGroup action is available
         if ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
-            log_info "Stack ready after ${STACK_ELAPSED}s"
-            break
+            # Also verify controllers are active for full readiness
+            if ros2 control list_controllers 2>/dev/null | grep -q "panda_arm_controller.*active"; then
+                log_info "Stack fully ready after ${STACK_ELAPSED}s (action + controllers)"
+                STACK_FULLY_READY=true
+                break
+            else
+                log_info "  MoveGroup ready, waiting for controllers..."
+            fi
         fi
 
         # Check if stack process is still running
@@ -186,13 +195,22 @@ run_scenario() {
         sleep $STACK_POLL_INTERVAL
         STACK_ELAPSED=$((STACK_ELAPSED + STACK_POLL_INTERVAL))
         log_info "  Still waiting... (${STACK_ELAPSED}s / ${STACK_TIMEOUT}s)"
+
+        # Exponential backoff (double interval up to max)
+        STACK_POLL_INTERVAL=$((STACK_POLL_INTERVAL * 2))
+        [ $STACK_POLL_INTERVAL -gt $STACK_POLL_MAX ] && STACK_POLL_INTERVAL=$STACK_POLL_MAX
     done
 
     # Final verification after polling loop
-    if ! ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
-        log_error "Stack failed to start for $scenario (timeout after ${STACK_TIMEOUT}s)"
-        kill $STACK_PID 2>/dev/null || true
-        return 1
+    if [ "$STACK_FULLY_READY" = false ]; then
+        # One more check in case we timed out but it's actually ready now
+        if ! ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
+            log_error "Stack failed to start for $scenario (timeout after ${STACK_TIMEOUT}s)"
+            kill $STACK_PID 2>/dev/null || true
+            return 1
+        else
+            log_warn "Stack ready but controllers may not be fully active"
+        fi
     fi
 
     # Start load generator if needed
@@ -201,12 +219,26 @@ run_scenario() {
         log_info "Starting CPU load..."
         "$SCRIPT_DIR/cpu_load.sh" 4 $((num_trials * 120)) &
         LOAD_PID=$!
-        sleep 3
+        log_info "Waiting for load to stabilize (10s)..."
+        sleep 10
+        # Verify load is actually running
+        if ! kill -0 $LOAD_PID 2>/dev/null; then
+            log_error "CPU load generator died unexpectedly"
+            kill $STACK_PID 2>/dev/null || true
+            return 1
+        fi
     elif [ "$scenario" = "msg_load" ]; then
         log_info "Starting message load..."
         "$SCRIPT_DIR/msg_load.sh" 1000 4 $((num_trials * 120)) &
         LOAD_PID=$!
-        sleep 3
+        log_info "Waiting for load to stabilize (10s)..."
+        sleep 10
+        # Verify load is actually running
+        if ! kill -0 $LOAD_PID 2>/dev/null; then
+            log_error "Message load generator died unexpectedly"
+            kill $STACK_PID 2>/dev/null || true
+            return 1
+        fi
     fi
 
     # Run warmup trials
@@ -221,6 +253,10 @@ run_scenario() {
             --action-name "$MOVEIT_ACTION_NAME" 2>&1 || true
         sleep 2
     done
+
+    # Cooldown after warmup to let system stabilize before data collection
+    log_info "Warmup complete. Cooling down (10s) before data collection..."
+    sleep 10
 
     # Run actual trials
     log_info "Running $num_trials data collection trials..."
@@ -287,8 +323,15 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
                 sleep 2  # Brief pause before retry
             fi
 
-            # Start trace
-            "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > /dev/null 2>&1
+            # Start trace (check exit code for failure detection)
+            TRACE_STARTED=false
+            if "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > "$TRACE_DIR/trace_start.log" 2>&1; then
+                TRACE_STARTED=true
+            else
+                log_warn "Tracing failed to start. Check $TRACE_DIR/trace_start.log"
+                # Save diagnostic info
+                lttng list > "$TRACE_DIR/lttng_list.log" 2>&1 || true
+            fi
 
             sleep 1
 
@@ -362,9 +405,9 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
     kill $STACK_PID 2>/dev/null || true
     wait $STACK_PID 2>/dev/null || true
 
-    # Cool down before next scenario
-    log_info "Cooling down..."
-    sleep 10
+    # Cool down before next scenario (longer than inter-trial cooldown)
+    log_info "Cooling down (${SCENARIO_COOLDOWN}s) before next scenario..."
+    sleep $SCENARIO_COOLDOWN
 
     log_info "Scenario $scenario complete: ${SCENARIO_SUCCESS[$scenario]} success, ${SCENARIO_FAILED[$scenario]} failed"
 }

@@ -15,6 +15,7 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
+    OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
@@ -214,26 +215,26 @@ def generate_launch_description():
         output="screen",
     )
 
-    # Delay controller loading to ensure Gazebo and robot are ready
-    delayed_controllers = TimerAction(
-        period=5.0,
-        actions=[
-            load_joint_state_broadcaster,
-        ],
-    )
+    # Create delayed actions using OpaqueFunction to evaluate LaunchConfiguration
+    def create_delayed_spawn(context):
+        delay = float(LaunchConfiguration("spawn_delay").perform(context))
+        return [TimerAction(period=delay, actions=[spawn_robot])]
 
-    delayed_arm_controller = TimerAction(
-        period=7.0,
-        actions=[
-            load_panda_arm_controller,
-        ],
-    )
+    def create_delayed_controllers(context):
+        base_delay = float(LaunchConfiguration("controller_delay").perform(context))
+        return [
+            TimerAction(period=base_delay, actions=[load_joint_state_broadcaster]),
+            TimerAction(period=base_delay + 2.0, actions=[load_panda_arm_controller]),
+            TimerAction(period=base_delay + 3.0, actions=[load_panda_hand_controller]),
+        ]
 
-    delayed_hand_controller = TimerAction(
-        period=8.0,
-        actions=[
-            load_panda_hand_controller,
-        ],
+    delayed_spawn = OpaqueFunction(function=create_delayed_spawn)
+    delayed_controllers = OpaqueFunction(function=create_delayed_controllers)
+
+    # Add clock bridge delay to ensure Gazebo is ready
+    delayed_clock_bridge = TimerAction(
+        period=2.0,  # Wait for Gazebo to start before bridging clock
+        actions=[clock_bridge],
     )
 
     return LaunchDescription(
@@ -247,10 +248,8 @@ def generate_launch_description():
             set_gz_plugin_path,
             robot_state_publisher,
             gz_sim,
-            clock_bridge,
-            TimerAction(period=3.0, actions=[spawn_robot]),
-            delayed_controllers,
-            delayed_arm_controller,
-            delayed_hand_controller,
+            delayed_clock_bridge,  # Wait for Gazebo before clock bridge
+            delayed_spawn,  # Uses spawn_delay argument
+            delayed_controllers,  # Uses controller_delay argument
         ]
     )

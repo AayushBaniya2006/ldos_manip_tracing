@@ -177,6 +177,10 @@ class TraceAnalyzer:
         self._callback_stacks: Dict[int, List[CallbackEvent]] = {}  # vtid -> stack of active callbacks
         self._callback_names: Dict[int, str] = {}  # callback_ptr -> name
 
+        # Data loss detection counters
+        self._unmatched_callback_ends: int = 0
+        self._malformed_events: int = 0
+
     def analyze(self) -> TraceMetrics:
         """Process the trace and extract metrics."""
         print(f"Analyzing trace: {self.trace_path}")
@@ -251,6 +255,12 @@ class TraceAnalyzer:
         print(f"Trace duration: {self.metrics.duration_s:.2f}s")
         print(f"Callbacks: {self.metrics.total_callbacks}")
 
+        # Report data loss indicators
+        if self._unmatched_callback_ends > 0:
+            print(f"WARNING: {self._unmatched_callback_ends} callback_end events had no matching start (data loss)")
+        if self._malformed_events > 0:
+            print(f"WARNING: {self._malformed_events} malformed events skipped")
+
         return self.metrics
 
     def _find_trace_data(self) -> Optional[Path]:
@@ -286,10 +296,18 @@ class TraceAnalyzer:
 
     def _handle_callback_start(self, event, ts_ns: int):
         """Handle callback_start event using stack-based approach for nested callbacks."""
-        callback_ptr = event['callback']
-        vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
-        vpid = event.common_context_field.get('vpid', 0) if event.common_context_field else 0
-        procname = str(event.common_context_field.get('procname', '')) if event.common_context_field else ''
+        try:
+            callback_ptr = event['callback']
+        except (KeyError, TypeError) as e:
+            self._malformed_events += 1
+            return
+
+        try:
+            vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
+            vpid = event.common_context_field.get('vpid', 0) if event.common_context_field else 0
+            procname = str(event.common_context_field.get('procname', '')) if event.common_context_field else ''
+        except Exception:
+            vtid, vpid, procname = 0, 0, ''
 
         # Initialize stack for this thread if needed
         if vtid not in self._callback_stacks:
@@ -306,11 +324,24 @@ class TraceAnalyzer:
 
     def _handle_callback_end(self, event, ts_ns: int):
         """Handle callback_end event using stack-based approach for nested callbacks."""
-        callback_ptr = event['callback']
-        vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
+        try:
+            callback_ptr = event['callback']
+        except (KeyError, TypeError):
+            self._malformed_events += 1
+            return
+
+        try:
+            vtid = event.common_context_field.get('vtid', 0) if event.common_context_field else 0
+        except Exception:
+            vtid = 0
 
         if vtid not in self._callback_stacks or not self._callback_stacks[vtid]:
-            return  # No matching start event
+            # Data loss detection: callback_end without matching start
+            self._unmatched_callback_ends += 1
+            if self._unmatched_callback_ends == 1 or self._unmatched_callback_ends % 100 == 0:
+                print(f"WARNING: {self._unmatched_callback_ends} unmatched callback_end events "
+                      "(possible buffer overflow or partial trace)")
+            return
 
         # Find the most recent matching callback on the stack
         # In most cases, it's the top of stack, but handle out-of-order ends gracefully
