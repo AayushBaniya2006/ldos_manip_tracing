@@ -136,9 +136,10 @@ phase1_system_prep() {
         python3-venv \
         python3-dev
 
-    # Enable universe repository
+    # Enable universe repository (required for python3-bt2 and other packages)
     log_info "Enabling universe repository..."
-    sudo add-apt-repository universe -y 2>/dev/null || true
+    sudo add-apt-repository -y universe 2>/dev/null || true
+    sudo apt-get update -q
 
     log_info "Phase 1 complete."
 }
@@ -318,8 +319,15 @@ phase5_lttng_install() {
     apt_install \
         lttng-tools \
         liblttng-ust-dev \
-        python3-lttngust \
-        python3-bt2
+        python3-lttngust
+
+    # Install python3-bt2 separately with fallback (may have dependency issues)
+    log_info "Installing python3-bt2 (babeltrace2 Python bindings)..."
+    if ! apt_install python3-bt2; then
+        log_warn "python3-bt2 not available via apt, trying alternative..."
+        # Try installing babeltrace2 package which may include bindings
+        apt_install babeltrace2 || true
+    fi
 
     # Install kernel modules (may fail on some systems)
     log_info "Installing LTTng kernel modules..."
@@ -380,9 +388,10 @@ phase6_python_deps() {
     log_step "=== PHASE 6: Python Dependencies ==="
 
     # Create virtual environment if it doesn't exist (PEP 668 compliant)
+    # Use --system-site-packages to access system python3-bt2 package
     if [ ! -d "$VENV_DIR" ]; then
         log_info "Creating Python virtual environment at $VENV_DIR..."
-        python3 -m venv "$VENV_DIR"
+        python3 -m venv --system-site-packages "$VENV_DIR"
     else
         log_info "Virtual environment already exists at $VENV_DIR"
     fi
@@ -594,10 +603,10 @@ phase10_verify() {
         echo -n "  Checking $name... "
         if eval "$cmd" >/dev/null 2>&1; then
             echo -e "${GREEN}OK${NC}"
-            ((PASS++))
+            PASS=$((PASS + 1))
         else
             echo -e "${RED}FAILED${NC}"
-            ((FAIL++))
+            FAIL=$((FAIL + 1))
         fi
     }
 
