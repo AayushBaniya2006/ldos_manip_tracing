@@ -30,6 +30,9 @@ ros2_events:
   - "ros2:rcl_publish"
   - "ros2:rclcpp_subscription_callback_added"
   - "ros2:rclcpp_subscription_init"
+  # Message receive tracing (Phase 4: for pub→sub latency)
+  - "ros2:rcl_take"
+  - "ros2:rclcpp_take"
 
   # Executor tracing
   - "ros2:rclcpp_executor_get_next_ready"

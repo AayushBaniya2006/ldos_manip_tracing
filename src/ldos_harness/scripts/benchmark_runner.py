@@ -21,6 +21,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass, asdict, field
@@ -28,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+import psutil
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -81,6 +83,12 @@ class TrialResult:
     t_execution_start: float = 0.0
     t_execution_end: float = 0.0
 
+    # Timing accuracy tracking - indicates source of each timestamp
+    # Sources: "feedback" (from MoveGroup state callback - most accurate),
+    #          "result" (from action result planning_time field),
+    #          "estimated" (from goal send time - conservative fallback)
+    timing_sources: Dict[str, str] = field(default_factory=dict)
+
     # Derived metrics (milliseconds)
     planning_latency_ms: float = 0.0
     execution_latency_ms: float = 0.0
@@ -98,6 +106,15 @@ class TrialResult:
 
     # Markers
     markers: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Trace correlation - unique ID for matching with LTTng traces
+    trace_correlation_id: str = ""
+
+    # CPU utilization (Phase 1: measured during trial execution)
+    cpu_percent_mean: float = 0.0
+    cpu_percent_max: float = 0.0
+    cpu_percent_samples: List[float] = field(default_factory=list)
+    memory_percent: float = 0.0
 
     def compute_derived_metrics(self):
         """Compute latency metrics from timestamps."""
@@ -121,6 +138,15 @@ class BenchmarkRunner(Node):
         self.action_name = action_name
         self.result = TrialResult(trial_id=trial_id, scenario=scenario, status="pending")
         self.markers: List[TimingMarker] = []
+
+        # Generate unique trace correlation ID for LTTng trace matching
+        # Format: trial_id + timestamp in microseconds for uniqueness
+        self._trace_correlation_id = f"{trial_id}_{int(time.time() * 1e6)}"
+        self.result.trace_correlation_id = self._trace_correlation_id
+
+        # Track whether we got timing from feedback (more accurate) vs estimation
+        self._got_planning_feedback = False
+        self._got_execution_feedback = False
 
         # Callback group for action client
         self._cb_group = ReentrantCallbackGroup()
@@ -168,19 +194,67 @@ class BenchmarkRunner(Node):
         self.markers.append(marker)
         self.get_logger().debug(f'Marker: {name} wall={wall_now:.6f}s ros={ros_now.nanoseconds}ns')
 
+    def _start_cpu_sampling(self, sample_rate_hz: float = 10.0):
+        """Start background CPU sampling at specified rate."""
+        self._cpu_samples: List[float] = []
+        self._cpu_sampling_active = True
+        self._cpu_sample_interval = 1.0 / sample_rate_hz
+
+        def sample_cpu():
+            # Prime psutil (first call always returns 0)
+            psutil.cpu_percent(interval=None)
+            while self._cpu_sampling_active:
+                cpu = psutil.cpu_percent(interval=None)
+                self._cpu_samples.append(cpu)
+                time.sleep(self._cpu_sample_interval)
+
+        self._cpu_thread = threading.Thread(target=sample_cpu, daemon=True)
+        self._cpu_thread.start()
+        self.get_logger().debug(f'CPU sampling started at {sample_rate_hz}Hz')
+
+    def _stop_cpu_sampling(self):
+        """Stop CPU sampling and compute statistics."""
+        self._cpu_sampling_active = False
+        if hasattr(self, '_cpu_thread'):
+            self._cpu_thread.join(timeout=1.0)
+
+        if self._cpu_samples:
+            self.result.cpu_percent_samples = self._cpu_samples
+            self.result.cpu_percent_mean = sum(self._cpu_samples) / len(self._cpu_samples)
+            self.result.cpu_percent_max = max(self._cpu_samples)
+            self.get_logger().info(
+                f'CPU: mean={self.result.cpu_percent_mean:.1f}%, '
+                f'max={self.result.cpu_percent_max:.1f}%, '
+                f'samples={len(self._cpu_samples)}'
+            )
+
+        # Capture memory at end of trial
+        self.result.memory_percent = psutil.virtual_memory().percent
+        self.get_logger().debug(f'Memory: {self.result.memory_percent:.1f}%')
+
     def run_benchmark(self, timeout: float = 60.0) -> TrialResult:
         """Execute the benchmark trial."""
         self.get_logger().info(f'Starting benchmark trial: {self.trial_id}')
+        self.get_logger().info(f'Trace correlation ID: {self._trace_correlation_id}')
         self.add_marker('benchmark_start')
+
+        # Add trace correlation marker for LTTng trace matching
+        self.add_marker(f'trace_correlation:{self._trace_correlation_id}')
+
+        # Start CPU sampling (10Hz background thread)
+        self._start_cpu_sampling(sample_rate_hz=10.0)
 
         try:
             # Create motion plan request
             goal_msg = self._create_move_goal()
 
-            # Send goal - planning starts immediately when goal is sent
+            # Send goal - record goal send time, but DON'T set planning_start yet
+            # Planning start will be captured more accurately from feedback callback
+            # when MoveGroup transitions to "PLANNING" state
             self.add_marker('goal_sent')
             self.result.t_goal_sent = time.time()
-            self.result.t_planning_start = time.time()  # Planning starts at goal send
+            # Store conservative estimate in case feedback never arrives
+            self._t_goal_sent_backup = time.time()
 
             send_goal_future = self._move_group_client.send_goal_async(
                 goal_msg,
@@ -216,6 +290,7 @@ class BenchmarkRunner(Node):
 
             result = result_future.result().result
             self.result.t_execution_end = time.time()
+            self.result.timing_sources['t_execution_end'] = 'result'
             self.add_marker('execution_complete')
 
             # Process result
@@ -223,9 +298,33 @@ class BenchmarkRunner(Node):
 
             if error_code == 1:  # MoveItErrorCodes.SUCCESS
                 self.result.status = "success"
-                self.result.t_planning_end = self.result.t_planning_start + result.planning_time
-                self.result.t_execution_start = self.result.t_planning_end
                 self.result.planning_time_actual = result.planning_time
+
+                # Use timing from feedback if available (most accurate)
+                # Otherwise fall back to estimation from result.planning_time
+                if not self._got_planning_feedback:
+                    # Fallback: estimate planning start from goal send
+                    self.result.t_planning_start = self._t_goal_sent_backup
+                    self.result.timing_sources['t_planning_start'] = 'estimated'
+                    self.get_logger().warn(
+                        'Planning start not captured from feedback, using goal send time (less accurate)'
+                    )
+
+                if 't_planning_end' not in self.result.timing_sources:
+                    # Fallback: compute planning end from start + planning_time
+                    self.result.t_planning_end = self.result.t_planning_start + result.planning_time
+                    self.result.timing_sources['t_planning_end'] = 'result'
+                    self.get_logger().info(
+                        f'Planning end computed from result.planning_time: {result.planning_time:.3f}s'
+                    )
+
+                if 't_execution_start' not in self.result.timing_sources:
+                    # Fallback: execution starts when planning ends
+                    self.result.t_execution_start = self.result.t_planning_end
+                    self.result.timing_sources['t_execution_start'] = 'estimated'
+                    self.get_logger().warn(
+                        'Execution start not captured from feedback, using planning end time (less accurate)'
+                    )
 
                 if result.planned_trajectory.joint_trajectory.points:
                     pts = result.planned_trajectory.joint_trajectory.points
@@ -330,25 +429,51 @@ class BenchmarkRunner(Node):
         return goal
 
     def _feedback_callback(self, feedback_msg):
-        """Handle feedback from MoveGroup."""
+        """Handle feedback from MoveGroup.
+
+        This callback provides the most accurate timing for planning/execution
+        transitions since it's triggered when MoveGroup actually changes state,
+        rather than estimating from goal send/result times.
+        """
         feedback = feedback_msg.feedback
         state = feedback.state
         self.get_logger().debug(f'MoveGroup state: {state}')
 
-        # Record state transitions as markers
+        # Record state transitions as markers with high-resolution timestamps
         if state == "PLANNING":
-            self.add_marker('planning_started')
+            self.add_marker('planning_started_feedback')
+            # Capture actual planning start time from feedback (most accurate)
+            if self.result.t_planning_start == 0.0:
+                self.result.t_planning_start = time.time()
+                self.result.timing_sources['t_planning_start'] = 'feedback'
+                self._got_planning_feedback = True
+                self.get_logger().info(
+                    f'Planning start captured from feedback at {self.result.t_planning_start:.6f}'
+                )
+
         elif state == "MONITOR":
-            self.add_marker('execution_started')
-            # Only set timing values if not already set (avoid overwriting)
+            self.add_marker('execution_started_feedback')
+            # Capture planning end / execution start from feedback (most accurate)
             if self.result.t_planning_end == 0.0:
                 self.result.t_planning_end = time.time()
+                self.result.timing_sources['t_planning_end'] = 'feedback'
+                self.get_logger().info(
+                    f'Planning end captured from feedback at {self.result.t_planning_end:.6f}'
+                )
             if self.result.t_execution_start == 0.0:
                 self.result.t_execution_start = time.time()
+                self.result.timing_sources['t_execution_start'] = 'feedback'
+                self._got_execution_feedback = True
+                self.get_logger().info(
+                    f'Execution start captured from feedback at {self.result.t_execution_start:.6f}'
+                )
 
     def _finalize_result(self) -> TrialResult:
         """Finalize and save the trial result."""
         self.add_marker('benchmark_end')
+
+        # Stop CPU sampling and compute statistics
+        self._stop_cpu_sampling()
 
         # Compute derived metrics
         self.result.compute_derived_metrics()
@@ -431,6 +556,11 @@ def main():
             print(f"Trajectory points: {result.trajectory_points}")
         elif result.error_message:
             print(f"Error: {result.error_message}")
+
+        # Always print CPU metrics (captured regardless of success/failure)
+        if result.cpu_percent_samples:
+            print(f"CPU utilization: mean={result.cpu_percent_mean:.1f}%, max={result.cpu_percent_max:.1f}%")
+            print(f"Memory utilization: {result.memory_percent:.1f}%")
 
     except Exception as e:
         print(f"FATAL: {e}", file=sys.stderr)

@@ -408,7 +408,8 @@ phase6_python_deps() {
         jupyter \
         jupyterlab \
         bokeh \
-        statsmodels
+        statsmodels \
+        psutil
 
     # Handle babeltrace2 - try pip first, fall back to system package symlink
     log_info "Installing babeltrace2..."
@@ -619,6 +620,7 @@ phase10_verify() {
     verify "Python scipy" "'$VENV_DIR/bin/python3' -c 'import scipy'"
     verify "Python matplotlib" "'$VENV_DIR/bin/python3' -c 'import matplotlib'"
     verify "Python babeltrace2" "'$VENV_DIR/bin/python3' -c 'import bt2'"
+    verify "Python psutil" "'$VENV_DIR/bin/python3' -c 'import psutil'"
     verify "ldos_harness package" "ros2 pkg list | grep -q ldos_harness"
 
     echo ""
