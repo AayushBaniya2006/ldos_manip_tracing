@@ -21,7 +21,7 @@ ROS_SETUP := set +u; \
              for d in jazzy humble iron rolling; do \
                if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
              done; \
-             source $(WS_ROOT)/install/setup.bash 2>/dev/null || true; \
+             if [ -f "$(WS_ROOT)/install/setup.bash" ]; then source "$(WS_ROOT)/install/setup.bash"; else echo "ERROR: Workspace not built. Run 'make setup' first." >&2; exit 1; fi; \
              set -u
 
 # Combined environment setup (ROS + venv)
@@ -29,7 +29,7 @@ ENV_SETUP := set +u; \
              for d in jazzy humble iron rolling; do \
                if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
              done; \
-             source $(WS_ROOT)/install/setup.bash 2>/dev/null || true; \
+             if [ -f "$(WS_ROOT)/install/setup.bash" ]; then source "$(WS_ROOT)/install/setup.bash"; else echo "ERROR: Workspace not built. Run 'make setup' first." >&2; exit 1; fi; \
              if [ -f "$(VENV_DIR)/bin/activate" ]; then source "$(VENV_DIR)/bin/activate"; fi; \
              set -u
 

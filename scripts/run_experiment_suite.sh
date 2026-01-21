@@ -48,6 +48,9 @@ for distro in jazzy humble iron rolling; do
 done
 if [ -f "$WS_ROOT/install/setup.bash" ]; then
     source "$WS_ROOT/install/setup.bash"
+else
+    echo -e "${RED}[ERROR]${NC} Workspace not built. Run 'make setup' first."
+    exit 1
 fi
 # Activate venv if exists
 if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
