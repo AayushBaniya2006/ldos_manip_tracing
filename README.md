@@ -55,6 +55,177 @@ Experiments conducted on CloudLab AMD EPYC nodes (January 2026):
 
 ---
 
+## Latest Experiment Results (January 23, 2026)
+
+Experiments conducted on CloudLab AMD EPYC node (`amd164.utah.cloudlab.us`):
+
+### Summary Statistics
+
+| Scenario | Trials | Success Rate | Planning (ms) | Execution (ms) | Total (ms) |
+|----------|--------|--------------|---------------|----------------|------------|
+| **Baseline** | 11 | 100% | 15.6 ± 4.1 | 656.2 ± 500.4 | 673.7 ± 501.5 |
+| **CPU Load** | 11 | 100% | 13.6 ± 1.2 | 529.4 ± 93.1 | 545.0 ± 93.8 |
+| **Msg Load** | 10 | **0%** | 13.5 ± 4.0 | - | **FAILED** |
+
+### Key Findings
+
+1. **CPU load (80%) does NOT significantly degrade planning performance**
+   - Planning time: 15.6ms (baseline) vs 13.6ms (CPU load) - no degradation
+   - System remains fully functional under CPU stress
+
+2. **CPU load REDUCES execution variance**
+   - Baseline std: 500.4ms → CPU load std: 93.1ms
+   - More predictable behavior under controlled CPU contention
+
+3. **DDS message flood (4000 msg/s) causes 100% execution failure**
+   - All 10 trials failed with `execution_failed` status
+   - Trajectory points: 0 (no valid trajectory executed)
+   - DDS middleware completely overwhelmed
+
+### CPU Profiling Results
+
+Profiled experiments captured with `perf` + FlameGraph:
+
+| Profile | Samples | CPU Mean | CPU Max | Flamegraph |
+|---------|---------|----------|---------|------------|
+| `baseline_profiled` | ~50K | 1.1% | 1.9% | `baseline_profiled_*_flamegraph.svg` |
+| `cpu_load_profiled` | 87,858 | 26.7% | 100% | `cpu_load_profiled_*_flamegraph.svg` |
+
+#### Sample Flamegraph
+
+![CPU Flamegraph](sampleFlameGraph.png)
+
+*Interactive flamegraph showing CPU time distribution. Bottom = entry points (swapper, ruby/Gazebo, move_group), Top = leaf functions. Width = CPU time. Click to zoom in the interactive SVG version.*
+
+**Key areas visible:**
+- **Left (orange/red):** `ruby` process (Gazebo simulation) - `gz::sim`, `dart::` physics
+- **Center (wide red bar):** `swapper` - kernel idle time (`cpuidle_enter`, `do_idle`)
+- **Right (red):** Kernel interrupt handling (`irqentry`, `sysvec_call_function`)
+
+#### CPU Load Profile Analysis (cpu_load_profiled_20260123_124125)
+
+```
+Duration: 60s | Samples: 87K | Event: cycles:P | Total Events: ~1.75 trillion
+
+Top Functions by CPU Time:
+─────────────────────────────────────────────────────────────────────
+  28.30%  swapper          [kernel.kallsyms]     io_idle
+          └── CPU idle time (system not fully loaded despite stress-ng)
+
+  29.62%  stress-ng-cpu    stress-ng             CPU stress workload
+          └── Artificial load generator consuming CPU as expected
+
+   0.06%  ruby             libgz_ros2_control    GazeboSimROS2ControlPlugin::PostUpdate
+   0.03%  ruby             libgz_ros2_control    GazeboSimROS2ControlPlugin::PreUpdate
+   0.01%  ruby             libgz_hardware        GazeboSimSystem::read
+   0.00%  ruby             libgz_hardware        GazeboSimSystem::write
+─────────────────────────────────────────────────────────────────────
+
+stress-ng Breakdown (29.62% total):
+  13.76%  0x00000000000d653e  (CPU intensive loop)
+  10.82%  0x00000000000d653b  (CPU intensive loop)
+   1.22%  0x00000000000d6530  (CPU intensive loop)
+   0.16%  asm_sysvec_apic_timer_interrupt (timer handling)
+
+Key Observations:
+• stress-ng consumes ~30% CPU as expected (4 workers × 80% = 320% spread across cores)
+• gz_ros2_control only 0.06% - robotics stack is NOT CPU-bound
+• 28% still idle - system has headroom even under load
+• ROS 2 control loop (read/write) is negligible overhead
+
+Full Robotics Stack Breakdown:
+─────────────────────────────────────────────────────────────────────
+PHYSICS ENGINE (DART):
+  ~0.95%  dart::simulation::World::step()
+  ~0.53%  dart::constraint::ConstraintSolver::solveConstrainedGroups()
+  ~0.99%  gz::physics::dartsim::SimulationFeatures::WorldForwardStep()
+
+ROS 2 EXECUTOR:
+   0.85%  move_group    rclcpp::Executor::spin_until_future_complete_impl()
+   0.93%  move_group    rclcpp::Executor::get_next_executable()
+   0.63%  ruby          rclcpp::Executor::spin_until_future_complete_impl()
+   0.54%  *             rclcpp::Executor::wait_for_work()
+
+CONTROLLER MANAGER:
+   0.15%  ruby  RealtimePublisher::publishingLoop()
+   0.07%  ruby  controller_manager::ControllerManager::update()
+   0.06%  ruby  controller_interface::ControllerInterfaceBase::trigger_update()
+   0.03%  ruby  JointTrajectoryController::update()
+   0.02%  ruby  controller_manager::ControllerManager::write()
+   0.02%  ruby  controller_manager::ControllerManager::read()
+─────────────────────────────────────────────────────────────────────
+
+Key Insight: DART physics (~2%) > ROS executor (~2.5%) > Controllers (~0.3%)
+The system is I/O bound (waiting for messages/futures), not CPU-bound.
+```
+
+#### Baseline Profile Analysis (baseline_profiled_20260123_123920)
+
+```
+Duration: 60s | Samples: ~50K | CPU: 1.1% mean
+
+Gazebo/ROS Control Functions:
+─────────────────────────────────────────────────────────────────────
+   0.21%  ruby  libgz_ros2_control  GazeboSimROS2ControlPlugin::PostUpdate
+   0.04%  ruby  libgz_ros2_control  GazeboSimROS2ControlPlugin::PreUpdate
+   0.01%  ruby  libgz_hardware      GazeboSimSystem::write
+   0.01%  ruby  libgz_hardware      GazeboSimSystem::read
+─────────────────────────────────────────────────────────────────────
+
+Key Observations:
+• System mostly idle (benchmark completes in ~2s)
+• Gazebo control plugin only 0.21% CPU - very efficient
+• No stress load means more samples of idle time
+• ROS 2 manipulation stack has minimal CPU footprint
+```
+
+### Raw Data
+
+Full CSV export available at `analysis/output/combined_summary.csv`
+
+<details>
+<summary>Click to expand raw trial data</summary>
+
+```
+trial_id,scenario,status,planning_latency_ms,execution_latency_ms,total_latency_ms
+baseline_001,baseline,success,12.95,510.86,525.71
+baseline_002,baseline,success,22.87,561.46,586.35
+baseline_003,baseline,success,13.00,510.28,525.28
+baseline_004,baseline,success,11.41,311.83,325.49
+baseline_005,baseline,success,23.12,460.29,485.35
+baseline_006,baseline,success,14.26,560.35,576.52
+baseline_007,baseline,success,14.03,660.40,676.38
+baseline_008,baseline,success,14.15,710.63,726.74
+baseline_009,baseline,success,13.21,260.32,275.40
+baseline_010,baseline,success,13.67,560.59,576.12
+baseline_profiled,baseline,success,18.40,2111.32,2131.77
+cpu_load_001,cpu_load,success,14.18,560.58,576.79
+cpu_load_002,cpu_load,success,12.62,411.51,426.09
+cpu_load_003,cpu_load,success,12.47,461.03,475.55
+cpu_load_004,cpu_load,success,15.38,661.51,678.84
+cpu_load_005,cpu_load,success,12.27,511.08,525.34
+cpu_load_006,cpu_load,success,13.74,410.52,426.34
+cpu_load_007,cpu_load,success,13.25,511.45,526.74
+cpu_load_008,cpu_load,success,13.47,511.39,527.09
+cpu_load_009,cpu_load,success,12.37,511.25,525.59
+cpu_load_010,cpu_load,success,13.92,711.74,727.72
+cpu_load_profiled,cpu_load,success,16.00,560.92,579.01
+msg_load_001,msg_load,execution_failed,14.87,10.26,27.37
+msg_load_002,msg_load,execution_failed,12.52,11.21,25.75
+msg_load_003,msg_load,execution_failed,12.41,10.57,24.98
+msg_load_004,msg_load,execution_failed,12.62,11.17,26.05
+msg_load_005,msg_load,execution_failed,14.38,11.60,28.10
+msg_load_006,msg_load,execution_failed,12.55,10.31,24.87
+msg_load_007,msg_load,execution_failed,21.90,10.45,35.01
+msg_load_008,msg_load,execution_failed,13.67,11.27,27.11
+msg_load_009,msg_load,execution_failed,5.42,10.75,18.26
+msg_load_010,msg_load,execution_failed,14.15,10.35,26.69
+```
+
+</details>
+
+---
+
 ## CPU Profiling with FlameGraph
 
 This harness includes integrated CPU profiling using Linux `perf` and Brendan Gregg's FlameGraph tools.
@@ -374,15 +545,6 @@ print(df.groupby('scenario')[['planning_latency_ms','execution_latency_ms','tota
 ```
 
 ---
-
-## Citation
-
-If you use this harness in your research, please cite:
-
-```
-LDOS Manipulation Tracing Harness
-https://github.com/AayushBaniya2006/ldos_manip_tracing
-```
 
 ## License
 
