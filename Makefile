@@ -38,7 +38,8 @@ ENV_SETUP := set +u; \
         analyze_all report help \
         sweep_cpu sweep_msg find_breaking \
         analyze_paths validate_weights hardware_info \
-        jupyter full_report check_deps venv deps
+        jupyter full_report check_deps venv deps \
+        profile_cpu profile_moveit profile_baseline profile_cpu_load profile_msg_load
 
 # Default target
 all: help
@@ -238,6 +239,49 @@ find_breaking:
 		--output analysis/output
 
 #------------------------------------------------------------------------------
+# CPU Profiling (perf + FlameGraph)
+#------------------------------------------------------------------------------
+
+## Generate system-wide CPU flamegraph (requires running stack)
+profile_cpu:
+	@echo "=== System-wide CPU Profiling ==="
+	@echo "This records CPU samples and generates flamegraph SVGs."
+	@echo "Ensure ROS stack is running before profiling."
+	chmod +x scripts/cpu_profile.sh
+	$(ROS_SETUP)
+	./scripts/cpu_profile.sh 30 system_profile
+
+## Profile MoveIt move_group specifically (requires running stack)
+profile_moveit:
+	@echo "=== MoveIt CPU Profiling ==="
+	@echo "This profiles MoveIt processes specifically."
+	@echo "Ensure ROS stack is running before profiling."
+	chmod +x scripts/profile_moveit.sh
+	$(ROS_SETUP)
+	./scripts/profile_moveit.sh 30 moveit_profile
+
+## Run profiled baseline experiment (launches stack, profiles, runs benchmark)
+profile_baseline:
+	@echo "=== Profiled Baseline Experiment ==="
+	chmod +x scripts/profile_experiment.sh
+	$(ROS_SETUP)
+	./scripts/profile_experiment.sh baseline 60
+
+## Run profiled CPU load experiment
+profile_cpu_load:
+	@echo "=== Profiled CPU Load Experiment ==="
+	chmod +x scripts/profile_experiment.sh
+	$(ROS_SETUP)
+	./scripts/profile_experiment.sh cpu_load 60
+
+## Run profiled message load experiment
+profile_msg_load:
+	@echo "=== Profiled Message Load Experiment ==="
+	chmod +x scripts/profile_experiment.sh
+	$(ROS_SETUP)
+	./scripts/profile_experiment.sh msg_load 60
+
+#------------------------------------------------------------------------------
 # Advanced Analysis
 #------------------------------------------------------------------------------
 
@@ -328,7 +372,14 @@ help:
 	@echo "  sweep_msg      - Sweep message publishers (1-50)"
 	@echo "  find_breaking  - Find system breaking point"
 	@echo ""
-	@echo "Analysis:"
+	@echo "CPU Profiling (FlameGraph):"
+	@echo "  profile_cpu      - System-wide CPU profile (requires running stack)"
+	@echo "  profile_moveit   - Profile MoveIt specifically (requires running stack)"
+	@echo "  profile_baseline - Run baseline experiment with CPU profiling"
+	@echo "  profile_cpu_load - Run CPU load experiment with CPU profiling"
+	@echo "  profile_msg_load - Run message load experiment with CPU profiling"
+	@echo ""
+	@echo "Analysis:
 	@echo "  analyze_all    - Process traces and aggregate results"
 	@echo "  analyze_paths  - End-to-end path analysis"
 	@echo "  analyze_sweep  - Analyze parameter sweep results"

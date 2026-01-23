@@ -77,28 +77,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Source ROS (disable -u temporarily for ROS setup scripts)
-set +u
-ROS_FOUND=false
-for distro in jazzy humble iron rolling; do
-    if [ -f "/opt/ros/${distro}/setup.bash" ]; then
-        source "/opt/ros/${distro}/setup.bash"
-        ROS_FOUND=true
-        break
+# =============================================================================
+# ROS 2 ENVIRONMENT SETUP (function-based for stability with strict mode)
+# =============================================================================
+
+source_ros() {
+    set +u
+
+    local ros_found=false
+    for distro in jazzy humble iron rolling; do
+        if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+            source "/opt/ros/${distro}/setup.bash"
+            ros_found=true
+            break
+        fi
+    done
+
+    if [ "$ros_found" = false ]; then
+        set -u
+        log_error "No ROS 2 installation found in /opt/ros/"
+        exit 1
     fi
-done
-if [ "$ROS_FOUND" = false ]; then
-    log_error "No ROS 2 installation found in /opt/ros/"
-    exit 1
-fi
-if [ -f "$WS_ROOT/install/setup.bash" ]; then
-    source "$WS_ROOT/install/setup.bash"
-fi
-# Activate venv if exists
-if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
-    source "$WS_ROOT/.venv/bin/activate"
-fi
-set -u
+
+    if [ -f "$WS_ROOT/install/setup.bash" ]; then
+        source "$WS_ROOT/install/setup.bash"
+    else
+        set -u
+        log_error "Workspace not built. Run 'make setup' first."
+        exit 1
+    fi
+
+    if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
+        source "$WS_ROOT/.venv/bin/activate"
+    fi
+
+    set -u
+}
+
+source_ros
 
 log_section "Trial: $TRIAL_ID"
 log_info "Scenario: $SCENARIO"

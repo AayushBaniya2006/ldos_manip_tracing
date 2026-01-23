@@ -19,15 +19,25 @@ NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[MSG_LOAD]${NC} $1"; }
 
-# Source ROS (disable -u temporarily for ROS setup scripts)
-set +u
-if [ -f /opt/ros/jazzy/setup.bash ]; then
-    source /opt/ros/jazzy/setup.bash
-fi
-if [ -f "$WS_ROOT/install/setup.bash" ]; then
-    source "$WS_ROOT/install/setup.bash"
-fi
-set -u
+# =============================================================================
+# ROS 2 ENVIRONMENT SETUP (function-based for stability with strict mode)
+# =============================================================================
+
+source_ros() {
+    set +u
+    for distro in jazzy humble iron rolling; do
+        if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+            source "/opt/ros/${distro}/setup.bash"
+            break
+        fi
+    done
+    if [ -f "$WS_ROOT/install/setup.bash" ]; then
+        source "$WS_ROOT/install/setup.bash"
+    fi
+    set -u
+}
+
+source_ros
 
 log_info "Starting $NUM_PUBS message flood publishers at ${RATE_HZ} Hz each"
 log_info "Duration: ${DURATION}s"

@@ -36,27 +36,48 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_section() { echo -e "\n${CYAN}======================================${NC}"; echo -e "${CYAN}=== $1 ===${NC}"; echo -e "${CYAN}======================================${NC}"; }
 
-# Source ROS dynamically (disable -u temporarily for ROS setup scripts)
-set +u
-ROS_FOUND=false
-for distro in jazzy humble iron rolling; do
-    if [ -f "/opt/ros/${distro}/setup.bash" ]; then
-        source "/opt/ros/${distro}/setup.bash"
-        ROS_FOUND=true
-        break
+# =============================================================================
+# ROS 2 ENVIRONMENT SETUP (function-based for stability with strict mode)
+# =============================================================================
+
+source_ros() {
+    # Disable -u temporarily - ROS setup scripts use unset variables
+    set +u
+
+    ROS_FOUND=false
+    for distro in jazzy humble iron rolling; do
+        if [ -f "/opt/ros/${distro}/setup.bash" ]; then
+            source "/opt/ros/${distro}/setup.bash"
+            ROS_FOUND=true
+            break
+        fi
+    done
+
+    if [ "$ROS_FOUND" = false ]; then
+        set -u
+        log_error "No ROS 2 installation found in /opt/ros/"
+        exit 1
     fi
-done
-if [ -f "$WS_ROOT/install/setup.bash" ]; then
-    source "$WS_ROOT/install/setup.bash"
-else
-    echo -e "${RED}[ERROR]${NC} Workspace not built. Run 'make setup' first."
-    exit 1
-fi
-# Activate venv if exists
-if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
-    source "$WS_ROOT/.venv/bin/activate"
-fi
-set -u
+
+    if [ -f "$WS_ROOT/install/setup.bash" ]; then
+        source "$WS_ROOT/install/setup.bash"
+    else
+        set -u
+        log_error "Workspace not built. Run 'make setup' first."
+        exit 1
+    fi
+
+    # Activate venv if exists
+    if [ -f "$WS_ROOT/.venv/bin/activate" ]; then
+        source "$WS_ROOT/.venv/bin/activate"
+    fi
+
+    # Re-enable strict mode
+    set -u
+}
+
+# Source ROS environment (must be called before any ROS commands)
+source_ros
 
 # =============================================================================
 # PRE-FLIGHT CHECKS
@@ -66,11 +87,8 @@ preflight_check() {
     log_info "Running pre-flight checks..."
     local errors=0
 
-    # Check ROS 2 was sourced
-    if [ "$ROS_FOUND" = false ]; then
-        log_error "No ROS 2 installation found in /opt/ros/"
-        errors=$((errors + 1))
-    fi
+    # Note: ROS 2 and workspace checks are now handled by source_ros() function
+    # which exits immediately if they fail
 
     # Check workspace is built
     if [ ! -d "$WS_ROOT/install" ]; then
@@ -78,10 +96,9 @@ preflight_check() {
         errors=$((errors + 1))
     fi
 
-    # Check ldos_harness package is available
-    if ! ros2 pkg list 2>/dev/null | grep -q "ldos_harness"; then
+    # Check ldos_harness package is available (file-based check - more reliable than ros2 pkg list)
+    if [ ! -d "$WS_ROOT/install/ldos_harness" ]; then
         log_error "ldos_harness package not found. Run: make setup"
-        log_error "  Ensure you have sourced install/setup.bash"
         errors=$((errors + 1))
     fi
 

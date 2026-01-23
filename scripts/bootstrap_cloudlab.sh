@@ -464,17 +464,58 @@ phase6_python_deps() {
 }
 
 ###############################################################################
-# Phase 7: Load Testing Tools
+# Phase 7: Load Testing and Profiling Tools
 ###############################################################################
 
 phase7_load_tools() {
-    log_step "=== PHASE 7: Load Testing Tools ==="
+    log_step "=== PHASE 7: Load Testing and Profiling Tools ==="
 
     log_info "Installing stress-ng for CPU load testing..."
     apt_install stress-ng
 
-    # Verify
+    # Verify stress-ng
     stress-ng --version | head -1
+
+    log_info "Installing Linux perf tools for CPU profiling..."
+    # Install perf tools - try multiple package names for compatibility
+    apt_install linux-tools-common linux-tools-generic || true
+
+    # Try to install kernel-specific perf tools
+    KERNEL_VERSION=$(uname -r)
+    log_info "Kernel version: $KERNEL_VERSION"
+    apt_install "linux-tools-${KERNEL_VERSION}" 2>/dev/null || {
+        log_warn "Kernel-specific perf tools not available for $KERNEL_VERSION"
+        log_warn "Generic perf may work, or install manually after reboot"
+    }
+
+    # Verify perf installation
+    if has_cmd perf; then
+        log_info "perf installed: $(perf --version 2>/dev/null | head -1 || echo 'version unknown')"
+    else
+        log_warn "perf not available - CPU profiling will not work"
+    fi
+
+    log_info "Installing FlameGraph tools for CPU profiling visualization..."
+    FLAMEGRAPH_DIR="${HOME}/FlameGraph"
+    if [ ! -d "$FLAMEGRAPH_DIR" ]; then
+        git clone https://github.com/brendangregg/FlameGraph.git "$FLAMEGRAPH_DIR"
+        log_info "FlameGraph tools installed at $FLAMEGRAPH_DIR"
+    else
+        log_info "FlameGraph tools already exist at $FLAMEGRAPH_DIR"
+        # Update to latest version
+        cd "$FLAMEGRAPH_DIR" && git pull --quiet && cd - >/dev/null
+    fi
+
+    # Verify FlameGraph scripts
+    if [ -f "${FLAMEGRAPH_DIR}/flamegraph.pl" ]; then
+        log_info "FlameGraph scripts verified"
+    else
+        log_warn "FlameGraph scripts not found at $FLAMEGRAPH_DIR"
+    fi
+
+    # Install optional Hotspot GUI (if available)
+    log_info "Attempting to install Hotspot (optional GUI flamegraph viewer)..."
+    apt_install hotspot 2>/dev/null || log_warn "Hotspot not available (optional)"
 
     log_info "Phase 7 complete."
 }
@@ -623,6 +664,8 @@ phase10_verify() {
     verify "tracetools" "ros2 pkg list | grep -q tracetools"
     verify "LTTng" "lttng --version"
     verify "stress-ng" "stress-ng --version"
+    verify "perf" "perf --version"
+    verify "FlameGraph" "[ -f ~/FlameGraph/flamegraph.pl ]"
     # Use venv python for package verification
     verify "Python venv" "[ -f '$VENV_DIR/bin/python3' ]"
     verify "Python pandas" "'$VENV_DIR/bin/python3' -c 'import pandas'"
