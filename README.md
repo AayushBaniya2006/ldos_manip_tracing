@@ -192,7 +192,7 @@ make profile_moveit          # MoveIt-specific
 
 ### Sample Flamegraph
 
-![CPU Flamegraph](sampleFlameGraph.png)
+![CPU Flamegraph](docs/images/sampleFlameGraph.png)
 
 *Interactive flamegraph showing CPU time distribution. Width = CPU time. Click to zoom in the SVG version.*
 

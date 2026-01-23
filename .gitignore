@@ -34,6 +34,17 @@ traces/
 results/
 analysis/output/
 
+# Perf profiling data (very large)
+*.perf.data
+*.perf.data.old
+
+# Virtual environment
+.venv/
+venv/
+
+# Claude Code internal
+.claude/
+
 
 
 # But keep directory structure
