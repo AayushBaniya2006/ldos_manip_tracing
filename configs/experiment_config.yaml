@@ -54,6 +54,20 @@ load_scenarios:
     payload_size_bytes: 1024
     num_publishers: 4
 
+  cpuset_limited:
+    # CPU isolation using cgroups v2 cpuset
+    # Gazebo runs on unlimited CPUs, ROS stack on limited CPUs
+    enabled: true
+    ros_cpu_count: 2        # Default: 2 CPUs for ROS stack (MoveIt, controllers, etc.)
+
+    # For parameter sweep - test these CPU counts
+    sweep_values: [1, 2, 4]
+
+    # Notes:
+    # - No stress-ng artificial load - just real resource limitation
+    # - Gazebo gets all CPUs except ros_cpu_count
+    # - Simulates embedded systems (Jetson Nano, Xavier, etc.)
+
 tracing:
   session_prefix: "ldos_trace"
   events:

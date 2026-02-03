@@ -35,11 +35,12 @@ ENV_SETUP := set +u; \
 
 .PHONY: all bootstrap setup build clean smoke_test \
         run_baseline run_cpu_load run_msg_load run_all \
-        analyze_all report help \
+        analyze_all analyze_cpu report help \
         sweep_cpu sweep_msg find_breaking \
         analyze_paths validate_weights hardware_info \
         jupyter full_report check_deps venv deps \
-        profile_cpu profile_moveit profile_baseline profile_cpu_load profile_msg_load
+        profile_cpu profile_moveit profile_baseline profile_cpu_load profile_msg_load \
+        plot_cpu plot_all
 
 # Default target
 all: help
@@ -178,6 +179,47 @@ report: analyze_all
 			print(df.groupby('scenario')[['planning_latency_ms','execution_latency_ms','total_latency_ms']].describe().round(2))"; \
 	fi
 
+## Analyze CPU usage data from cpuset experiments
+analyze_cpu:
+	@echo "=== Analyzing CPU Usage Data ==="
+	$(ENV_SETUP)
+	@for csv in $(WS_ROOT)/results/cpuset_sweep_*/*/cpu_usage.csv; do \
+		if [ -f "$$csv" ]; then \
+			echo "Processing: $$csv"; \
+			python3 $(WS_ROOT)/analysis/analyze_cpu_usage.py "$$csv"; \
+		fi; \
+	done
+	@echo "Done! Check results in each cpuset_sweep_*/*/  directory"
+
+#------------------------------------------------------------------------------
+# CPU Utilization Visualization
+#------------------------------------------------------------------------------
+
+## Generate CPU utilization plots from experiment results
+plot_cpu:
+	@echo "=== Generating CPU Utilization Plots ==="
+	@mkdir -p $(WS_ROOT)/analysis/output/cpu_plots
+	$(ENV_SETUP); \
+	python3 $(WS_ROOT)/analysis/plot_results.py \
+		--results-dir $(WS_ROOT)/results \
+		--output-dir $(WS_ROOT)/analysis/output/cpu_plots \
+		--cpu-plots
+	@echo ""
+	@echo "CPU plots saved to: $(WS_ROOT)/analysis/output/cpu_plots/"
+
+## Generate all plots (latency + CPU)
+plot_all:
+	@echo "=== Generating All Plots ==="
+	@mkdir -p $(WS_ROOT)/analysis/output/plots
+	$(ENV_SETUP); \
+	python3 $(WS_ROOT)/analysis/plot_results.py \
+		--input $(WS_ROOT)/analysis/output/combined_summary.csv \
+		--results-dir $(WS_ROOT)/results \
+		--output-dir $(WS_ROOT)/analysis/output/plots \
+		--all-plots --cpu-timeseries
+	@echo ""
+	@echo "All plots saved to: $(WS_ROOT)/analysis/output/plots/"
+
 #------------------------------------------------------------------------------
 # Acceptance Tests
 #------------------------------------------------------------------------------
@@ -212,10 +254,35 @@ acceptance_test:
 	@[ $$FAIL -eq 0 ] || exit 1
 
 #------------------------------------------------------------------------------
+# CPUSET Experiments (cgroups v2 CPU isolation)
+#------------------------------------------------------------------------------
+
+## Check cpuset/cgroups v2 support
+check_cpuset:
+	@echo "=== Checking cpuset support ==="
+	chmod +x scripts/check_cpuset_support.sh
+	./scripts/check_cpuset_support.sh
+
+## Run cpuset-limited experiments (CPU isolation without stress-ng)
+run_cpuset:
+	@echo "=== Running cpuset-limited experiments (N=$(NUM_TRIALS)) ==="
+	@echo "ROS stack will be limited to $(ROS_CPU_COUNT) CPUs (default: 2)"
+	$(ROS_SETUP)
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_sweep.sh
+	./scripts/run_experiment_suite.sh $(NUM_TRIALS) cpuset_limited
+
+## Run cpuset parameter sweep (1, 2, 4 CPUs)
+sweep_cpuset:
+	@echo "=== Running cpuset CPU sweep ==="
+	$(ROS_SETUP)
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_sweep.sh
+	./scripts/cpuset_sweep.sh $(NUM_TRIALS)
+
+#------------------------------------------------------------------------------
 # Parameter Sweeps
 #------------------------------------------------------------------------------
 
-## Run CPU load parameter sweep
+## Run CPU load parameter sweep (stress-ng based - backburner)
 sweep_cpu:
 	@echo "=== Running CPU load parameter sweep ==="
 	$(ROS_SETUP)
@@ -367,7 +434,12 @@ help:
 	@echo "  run_msg_load   - Run message load experiments (N=$(NUM_TRIALS))"
 	@echo "  run_all        - Run all scenarios (N=$(NUM_TRIALS) each)"
 	@echo ""
-	@echo "Parameter Sweeps:"
+	@echo "CPUSET Experiments (cgroups v2 CPU isolation):"
+	@echo "  check_cpuset   - Verify cgroups v2 cpuset support"
+	@echo "  run_cpuset     - Run cpuset-limited experiments (N=$(NUM_TRIALS))"
+	@echo "  sweep_cpuset   - Sweep ROS stack CPUs (1, 2, 4)"
+	@echo ""
+	@echo "Parameter Sweeps (stress-ng based - backburner):"
 	@echo "  sweep_cpu      - Sweep CPU load (0-90%)"
 	@echo "  sweep_msg      - Sweep message publishers (1-50)"
 	@echo "  find_breaking  - Find system breaking point"
@@ -379,12 +451,16 @@ help:
 	@echo "  profile_cpu_load - Run CPU load experiment with CPU profiling"
 	@echo "  profile_msg_load - Run message load experiment with CPU profiling"
 	@echo ""
-	@echo "Analysis:
+	@echo "Analysis:"
 	@echo "  analyze_all    - Process traces and aggregate results"
 	@echo "  analyze_paths  - End-to-end path analysis"
 	@echo "  analyze_sweep  - Analyze parameter sweep results"
 	@echo "  validate_weights - Validate objective weights"
 	@echo "  report         - Generate summary report"
+	@echo ""
+	@echo "Visualization:"
+	@echo "  plot_cpu       - Generate CPU utilization plots (baseline vs stress-ng)"
+	@echo "  plot_all       - Generate all plots (latency + CPU with time-series)"
 	@echo ""
 	@echo "Reporting:"
 	@echo "  hardware_info  - Collect system specifications"

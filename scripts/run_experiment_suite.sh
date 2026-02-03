@@ -182,8 +182,63 @@ run_scenario() {
     # Start the ROS stack once for all trials in this scenario
     log_info "Starting ROS stack for $scenario..."
 
-    ros2 launch ldos_harness full_stack.launch.py headless:=true use_rviz:=false &
-    STACK_PID=$!
+    # Handle cpuset_limited scenario with split launch
+    GAZEBO_PID=""
+    if [ "$scenario" = "cpuset_limited" ]; then
+        # cpuset_limited: Launch Gazebo and ROS stack on separate CPU sets
+        log_info "Setting up cpuset-limited experiment..."
+
+        # Auto-detect CPU count
+        TOTAL_CPUS=$(nproc)
+        ROS_CPU_COUNT="${ROS_CPU_COUNT:-2}"
+
+        # Validate CPU count
+        if [ "$ROS_CPU_COUNT" -ge "$TOTAL_CPUS" ]; then
+            log_error "ROS_CPU_COUNT ($ROS_CPU_COUNT) >= TOTAL_CPUS ($TOTAL_CPUS)"
+            return 1
+        fi
+
+        # Calculate CPU assignments
+        # Gazebo: CPUs 0 through (TOTAL - ROS_CPU_COUNT - 1)
+        # ROS:    Last ROS_CPU_COUNT CPUs
+        GAZEBO_CPU_END=$((TOTAL_CPUS - ROS_CPU_COUNT - 1))
+        ROS_CPU_START=$((TOTAL_CPUS - ROS_CPU_COUNT))
+        ROS_CPU_END=$((TOTAL_CPUS - 1))
+
+        GAZEBO_CPUS="0-${GAZEBO_CPU_END}"
+        ROS_CPUS="${ROS_CPU_START}-${ROS_CPU_END}"
+
+        log_info "Total CPUs: $TOTAL_CPUS"
+        log_info "Gazebo CPUs: $GAZEBO_CPUS (unlimited)"
+        log_info "ROS Stack CPUs: $ROS_CPUS (LIMITED to $ROS_CPU_COUNT)"
+
+        # Launch Gazebo on unlimited CPUs
+        log_info "Launching Gazebo on CPUs $GAZEBO_CPUS..."
+        "$SCRIPT_DIR/cpuset_launch.sh" "$GAZEBO_CPUS" "gazebo" \
+            ros2 launch ldos_harness sim_only.launch.py headless:=true &
+        GAZEBO_PID=$!
+
+        # Wait for Gazebo to initialize
+        log_info "Waiting for Gazebo to initialize (15s)..."
+        sleep 15
+
+        # Verify Gazebo is running
+        if ! kill -0 $GAZEBO_PID 2>/dev/null; then
+            log_error "Gazebo process died unexpectedly"
+            return 1
+        fi
+
+        # Launch ROS stack on LIMITED CPUs
+        log_info "Launching ROS stack on CPUs $ROS_CPUS (LIMITED)..."
+        "$SCRIPT_DIR/cpuset_launch.sh" "$ROS_CPUS" "ros_stack" \
+            ros2 launch ldos_harness ros_stack.launch.py &
+        STACK_PID=$!
+
+    else
+        # Standard scenarios: Use full_stack.launch.py
+        ros2 launch ldos_harness full_stack.launch.py headless:=true use_rviz:=false &
+        STACK_PID=$!
+    fi
 
     # Wait for stack to initialize with polling and exponential backoff (timeout: 120s)
     log_info "Waiting for stack to initialize (polling, max 120s)..."
@@ -233,9 +288,11 @@ run_scenario() {
         fi
     fi
 
-    # Start load generator if needed
+    # Start load generator if needed (not for cpuset_limited - it uses CPU isolation instead)
     LOAD_PID=""
-    if [ "$scenario" = "cpu_load" ]; then
+    if [ "$scenario" = "cpuset_limited" ]; then
+        log_info "cpuset_limited scenario: No load generator (using CPU isolation instead)"
+    elif [ "$scenario" = "cpu_load" ]; then
         log_info "Starting CPU load..."
         "$SCRIPT_DIR/cpu_load.sh" 4 $((num_trials * 120)) &
         LOAD_PID=$!
@@ -424,6 +481,13 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
     log_info "Stopping ROS stack..."
     kill $STACK_PID 2>/dev/null || true
     wait $STACK_PID 2>/dev/null || true
+
+    # Stop Gazebo if started separately (cpuset_limited scenario)
+    if [ -n "$GAZEBO_PID" ] && kill -0 "$GAZEBO_PID" 2>/dev/null; then
+        log_info "Stopping Gazebo..."
+        kill "$GAZEBO_PID" 2>/dev/null || true
+        wait "$GAZEBO_PID" 2>/dev/null || true
+    fi
 
     # Cool down before next scenario (longer than inter-trial cooldown)
     log_info "Cooling down (${SCENARIO_COOLDOWN}s) before next scenario..."

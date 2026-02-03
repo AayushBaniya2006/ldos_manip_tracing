@@ -17,6 +17,14 @@ This harness measures **how system load affects ROS 2 manipulation performance**
 1. **Quantified DDS vulnerability** - First systematic measurement showing ROS 2 manipulation fails completely under message flood before showing any CPU degradation
 2. **Manipulation domain coverage** - Extends prior work on navigation robots to manipulation stacks (MoveIt + ros2_control)
 3. **Reproducible methodology** - Fully automated harness for CloudLab with kernel-level tracing
+4. **Realistic CPU isolation** - cgroups v2 cpuset experiments simulate embedded systems (Jetson) more accurately than artificial stress
+
+### Related Research
+
+- [On-Device CPU Scheduling for Robot Systems](https://arxiv.org/abs/2404.06452)
+- [PiCAS: Priority-Driven Chain-Aware Scheduling for ROS2](https://arxiv.org/abs/2209.03280)
+- [PAAM: Priority-Driven Accelerator Management in ROS 2](https://arxiv.org/abs/2404.06452)
+- [ros2_tracing: Multipurpose Low-Overhead Framework](https://arxiv.org/abs/2201.00393)
 
 ### Key Findings
 
@@ -64,13 +72,14 @@ Goal:   [x=0.4, y=0.2, z=0.5] meters relative to base
 Motion: MoveIt plans collision-free path, ros2_control executes trajectory
 ```
 
-This motion is repeated under three conditions:
+This motion is repeated under different load conditions:
 
 | Scenario | Stress Applied | Expected Outcome |
 |----------|----------------|------------------|
 | **Baseline** | None | All trials succeed |
 | **CPU Load** | 4 workers x 80% CPU (stress-ng) | Measure planning degradation |
 | **Message Load** | 4000 msg/s DDS flood | System failure |
+| **cpuset_limited** | cgroups v2 CPU isolation (1-4 CPUs) | Realistic embedded constraint |
 
 ### Metrics Collected (T1-T5)
 
@@ -145,6 +154,55 @@ ros2 run ldos_harness msg_flood_node.py --rate 1000 --topic /flood_topic_4 &
 - Controller returns `UNKNOWN` status
 - MoveIt reports `CONTROL_FAILED` (error code -4)
 
+### CPU Isolation (cgroups v2 cpuset) - NEW
+
+Instead of artificial CPU stress (stress-ng), this scenario uses **real CPU resource limitation** via Linux cgroups v2 cpuset. This simulates embedded systems (Jetson Nano, Xavier) more realistically.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CloudLab Node (auto-detect CPUs)                 │
+├───────────────────────────────┬─────────────────────────────────────┤
+│   GAZEBO CPUSET (unlimited)   │   ROS STACK CPUSET (LIMITED)       │
+│   ─────────────────────────   │   ───────────────────────────      │
+│   • gz-sim8 (Gazebo server)   │   • move_group (MoveIt)            │
+│                               │   • controller_manager              │
+│   (Physics simulation needs   │   • joint_trajectory_controller    │
+│    full resources for         │   • robot_state_publisher          │
+│    accurate timing)           │   • ros_gz_bridge (clock)          │
+│                               │   • benchmark_runner.py            │
+└───────────────────────────────┴─────────────────────────────────────┘
+```
+
+**Quick Start:**
+```bash
+# Check cpuset support
+make check_cpuset
+
+# Run with 2 CPUs for ROS stack (default)
+make run_cpuset NUM_TRIALS=10
+
+# Run CPU sweep (1, 2, 4 CPUs) to find breaking point
+make sweep_cpuset NUM_TRIALS=5
+
+# Custom CPU count
+ROS_CPU_COUNT=1 make run_cpuset NUM_TRIALS=10
+```
+
+**How it works:**
+- Uses `systemd-run --user --scope -p AllowedCPUs=X` (cgroups v2)
+- No root required
+- Gazebo runs on unlimited CPUs (accurate physics)
+- ROS stack constrained to 1, 2, or 4 CPUs
+- Auto-detects total CPU count at runtime
+
+**Expected Results:**
+
+| ROS CPUs | Expected Outcome |
+|----------|------------------|
+| 4 | Similar to baseline |
+| 2 | Slight degradation, still passing |
+| 1 | Significant degradation or failures |
+
 ---
 
 ## Tracing Methodology
@@ -218,15 +276,19 @@ make profile_moveit          # MoveIt-specific
 
 ## Future Work
 
-1. **Find exact DDS breaking point** - Sweep message rates (100, 500, 1000, 2000, 3000 msg/s) to identify failure threshold
+1. **CPU isolation analysis** - Run cpuset sweep experiments to find minimum viable CPU count for manipulation
 
-2. **Test DDS tuning** - Increase queue sizes, try shared memory transport, compare CycloneDDS vs FastDDS
+2. **Find exact DDS breaking point** - Sweep message rates (100, 500, 1000, 2000, 3000 msg/s) to identify failure threshold
 
-3. **Extend to real hardware** - Validate findings on physical Panda arm
+3. **Test DDS tuning** - Increase queue sizes, try shared memory transport, compare CycloneDDS vs FastDDS
 
-4. **Compare profiling approaches** - eBPF (lightweight) vs LTTng (detailed) tradeoffs
+4. **Extend to real hardware** - Validate findings on physical Panda arm
 
-5. **Apply adaptive throttling** - Integrate runtime pub-sub throttling to prevent failures
+5. **Compare profiling approaches** - eBPF (lightweight) vs LTTng (detailed) tradeoffs
+
+6. **Apply adaptive throttling** - Integrate runtime pub-sub throttling to prevent failures
+
+7. **Priority-driven scheduling** - Implement PiCAS-style chain-aware scheduling for ROS 2 executors
 
 ---
 
@@ -246,9 +308,14 @@ make acceptance_test   # Full component verification
 
 # === Experiments ===
 make run_baseline      # Baseline trials (NUM_TRIALS=10)
-make run_cpu_load      # CPU load trials
-make run_msg_load      # Message load trials
+make run_cpu_load      # CPU load trials (stress-ng)
+make run_msg_load      # Message load trials (DDS flood)
 make run_all           # All scenarios
+
+# === CPU Isolation (cgroups v2 cpuset) ===
+make check_cpuset      # Verify cgroups v2 cpuset support
+make run_cpuset        # Run cpuset-limited experiments
+make sweep_cpuset      # Sweep ROS stack CPUs (1, 2, 4)
 
 # === Profiling ===
 make profile_baseline  # Baseline + CPU profiling
@@ -260,7 +327,7 @@ make analyze_all       # Process traces and aggregate
 make report            # Summary statistics
 
 # === Parameter Sweeps ===
-make sweep_cpu         # Sweep CPU load 0-90%
+make sweep_cpu         # Sweep CPU load 0-90% (stress-ng)
 make sweep_msg         # Sweep message rate
 make find_breaking     # Binary search for breaking point
 ```
@@ -280,10 +347,18 @@ ldos_manip_tracing/
 │   ├── stop_trace.sh            # LTTng session stop
 │   ├── cpu_load.sh              # stress-ng wrapper
 │   ├── msg_load.sh              # DDS flood launcher
+│   ├── cpuset_launch.sh         # cgroups v2 CPU isolation wrapper
+│   ├── cpuset_sweep.sh          # CPU count parameter sweep
+│   ├── check_cpuset_support.sh  # Verify cgroups v2 support
 │   ├── cpu_profile.sh           # perf + FlameGraph
 │   └── analyze_traces.sh        # Post-processing pipeline
 ├── src/ldos_harness/            # ROS 2 package
-│   ├── launch/                  # Launch files (full_stack, sim, moveit)
+│   ├── launch/
+│   │   ├── full_stack.launch.py # Complete stack (Gazebo + ROS)
+│   │   ├── sim_only.launch.py   # Gazebo only (for cpuset isolation)
+│   │   ├── ros_stack.launch.py  # ROS only (for cpuset isolation)
+│   │   ├── sim_bringup.launch.py
+│   │   └── moveit_bringup.launch.py
 │   ├── config/                  # URDF, SRDF, controller configs
 │   └── scripts/
 │       ├── benchmark_runner.py  # Trial execution node
