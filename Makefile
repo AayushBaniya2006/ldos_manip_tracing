@@ -40,7 +40,8 @@ ENV_SETUP := set +u; \
         analyze_paths validate_weights hardware_info \
         jupyter full_report check_deps venv deps \
         profile_cpu profile_moveit profile_baseline profile_cpu_load profile_msg_load \
-        plot_cpu plot_all
+        plot_cpu plot_all \
+        setup_cpuset check_cpuset run_cpuset sweep_cpuset cleanup_cpuset
 
 # Default target
 all: help
@@ -257,6 +258,14 @@ acceptance_test:
 # CPUSET Experiments (cgroups v2 CPU isolation)
 #------------------------------------------------------------------------------
 
+## Setup cpuset delegation (ONE-TIME, requires sudo)
+setup_cpuset:
+	@echo "=== Setting up cpuset delegation (requires sudo) ==="
+	@echo "This enables cgroups v2 cpuset delegation for user sessions."
+	@echo "You will need to logout and login again after this."
+	chmod +x scripts/setup_cpuset_delegation.sh
+	sudo ./scripts/setup_cpuset_delegation.sh
+
 ## Check cpuset/cgroups v2 support
 check_cpuset:
 	@echo "=== Checking cpuset support ==="
@@ -268,15 +277,21 @@ run_cpuset:
 	@echo "=== Running cpuset-limited experiments (N=$(NUM_TRIALS)) ==="
 	@echo "ROS stack will be limited to $(ROS_CPU_COUNT) CPUs (default: 2)"
 	$(ROS_SETUP)
-	chmod +x scripts/cpuset_launch.sh scripts/cpuset_sweep.sh
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh
 	./scripts/run_experiment_suite.sh $(NUM_TRIALS) cpuset_limited
 
 ## Run cpuset parameter sweep (1, 2, 4 CPUs)
 sweep_cpuset:
 	@echo "=== Running cpuset CPU sweep ==="
 	$(ROS_SETUP)
-	chmod +x scripts/cpuset_launch.sh scripts/cpuset_sweep.sh
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh
 	./scripts/cpuset_sweep.sh $(NUM_TRIALS)
+
+## Clean up leftover cgroups from failed experiments
+cleanup_cpuset:
+	@echo "=== Cleaning up leftover cgroups ==="
+	chmod +x scripts/cpuset_cleanup.sh
+	./scripts/cpuset_cleanup.sh
 
 #------------------------------------------------------------------------------
 # Parameter Sweeps
@@ -435,9 +450,11 @@ help:
 	@echo "  run_all        - Run all scenarios (N=$(NUM_TRIALS) each)"
 	@echo ""
 	@echo "CPUSET Experiments (cgroups v2 CPU isolation):"
+	@echo "  setup_cpuset   - Enable cpuset delegation (ONE-TIME, requires sudo)"
 	@echo "  check_cpuset   - Verify cgroups v2 cpuset support"
 	@echo "  run_cpuset     - Run cpuset-limited experiments (N=$(NUM_TRIALS))"
 	@echo "  sweep_cpuset   - Sweep ROS stack CPUs (1, 2, 4)"
+	@echo "  cleanup_cpuset - Clean up leftover cgroups from failed experiments"
 	@echo ""
 	@echo "Parameter Sweeps (stress-ng based - backburner):"
 	@echo "  sweep_cpu      - Sweep CPU load (0-90%)"

@@ -20,8 +20,8 @@ start_monitor() {
     # Create output directory
     mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-    # Write CSV header
-    echo "timestamp,process,pid,cpu_percent,mem_percent,cpu_id,state" > "$OUTPUT_FILE"
+    # Write CSV header (added cgroup column for cpuset verification)
+    echo "timestamp,process,pid,cpu_percent,mem_percent,cpu_id,state,cgroup" > "$OUTPUT_FILE"
 
     echo "[CPU_MONITOR] Starting background monitor..."
     echo "[CPU_MONITOR] Output: $OUTPUT_FILE"
@@ -37,7 +37,9 @@ start_monitor() {
             ps -eo pid,comm,%cpu,%mem,psr,state --no-headers 2>/dev/null | \
             grep -E "(move_group|controller|gz|robot_state|ros2|benchmark|joint_)" | \
             while read -r pid comm cpu mem psr state; do
-                echo "${TIMESTAMP},${comm},${pid},${cpu},${mem},${psr},${state}"
+                # Get cgroup info for cpuset verification
+                cgroup=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' | head -1 || echo "default")
+                echo "${TIMESTAMP},${comm},${pid},${cpu},${mem},${psr},${state},${cgroup}"
             done >> "$OUTPUT_FILE"
 
             sleep "$INTERVAL"
@@ -47,6 +49,92 @@ start_monitor() {
     local MONITOR_PID=$!
     echo "$MONITOR_PID" > "$PIDFILE"
     echo "[CPU_MONITOR] Monitor started (PID: $MONITOR_PID)"
+}
+
+# Verify processes are in correct cgroup (helper function for debugging)
+verify_cgroup() {
+    local pid=$1
+    local expected_cgroup=$2
+    local actual=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' || echo "default")
+    if [ "$actual" = "$expected_cgroup" ]; then
+        echo "[CPU_MONITOR] PID $pid: CORRECT cgroup ($actual)"
+        return 0
+    else
+        echo "[CPU_MONITOR] PID $pid: WRONG cgroup (expected: $expected_cgroup, actual: $actual)"
+        return 1
+    fi
+}
+
+# Verify CPU pinning - check that ROS processes are on expected CPUs
+# Usage: verify_cpu_pinning "38-39"
+verify_cpu_pinning() {
+    local expected_cpus="$1"
+    local mismatches=0
+    local checked=0
+
+    echo "[CPU_MONITOR] Verifying CPU pinning (expected: $expected_cpus)"
+    echo ""
+
+    # Parse expected CPU range into array
+    local -a expected_array=()
+    if [[ "$expected_cpus" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        local start=${BASH_REMATCH[1]}
+        local end=${BASH_REMATCH[2]}
+        for ((i=start; i<=end; i++)); do
+            expected_array+=("$i")
+        done
+    else
+        # Comma-separated or single CPU
+        IFS=',' read -ra expected_array <<< "$expected_cpus"
+    fi
+
+    # Check ROS processes
+    ps -eo pid,comm,psr --no-headers 2>/dev/null | \
+    grep -E "(move_group|controller|robot_state|ros2|joint_)" | \
+    while read -r pid comm psr; do
+        checked=$((checked + 1))
+        local is_expected=false
+
+        for cpu in "${expected_array[@]}"; do
+            if [ "$psr" = "$cpu" ]; then
+                is_expected=true
+                break
+            fi
+        done
+
+        if [ "$is_expected" = true ]; then
+            echo "[OK]   PID $pid ($comm) on CPU $psr"
+        else
+            echo "[FAIL] PID $pid ($comm) on CPU $psr - OUTSIDE expected range!"
+            mismatches=$((mismatches + 1))
+        fi
+    done
+
+    echo ""
+    if [ "$mismatches" -eq 0 ]; then
+        echo "[CPU_MONITOR] All processes on expected CPUs"
+        return 0
+    else
+        echo "[CPU_MONITOR] WARNING: $mismatches process(es) on unexpected CPUs!"
+        return 1
+    fi
+}
+
+# Quick snapshot of current CPU usage by ROS processes
+snapshot() {
+    echo "[CPU_MONITOR] Current ROS/Gazebo process CPU assignments:"
+    echo ""
+    printf "%-8s %-20s %-6s %-8s %-10s\n" "PID" "COMMAND" "CPU" "CGROUP" "STATE"
+    echo "--------------------------------------------------------------"
+
+    ps -eo pid,comm,psr,state --no-headers 2>/dev/null | \
+    grep -E "(move_group|controller|gz|robot_state|ros2|benchmark|joint_)" | \
+    while read -r pid comm psr state; do
+        local cgroup=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' | head -1 || echo "default")
+        printf "%-8s %-20s %-6s %-8s %-10s\n" "$pid" "$comm" "$psr" "$cgroup" "$state"
+    done
+
+    echo ""
 }
 
 stop_monitor() {
@@ -91,8 +179,31 @@ case "${1:-}" in
     status)
         status_monitor
         ;;
+    snapshot)
+        snapshot
+        ;;
+    verify)
+        if [ -z "${2:-}" ]; then
+            echo "Usage: $0 verify <expected_cpus>"
+            echo "Example: $0 verify 38-39"
+            exit 1
+        fi
+        verify_cpu_pinning "$2"
+        ;;
     *)
-        echo "Usage: $0 {start|stop|status} [output_file] [interval_seconds]"
+        echo "Usage: $0 {start|stop|status|snapshot|verify} [options]"
+        echo ""
+        echo "Commands:"
+        echo "  start [output_file] [interval]  Start background monitoring"
+        echo "  stop                            Stop background monitoring"
+        echo "  status                          Check if monitor is running"
+        echo "  snapshot                        Show current CPU assignments"
+        echo "  verify <cpus>                   Verify processes are on expected CPUs"
+        echo ""
+        echo "Examples:"
+        echo "  $0 start /tmp/cpu.csv 0.5"
+        echo "  $0 snapshot"
+        echo "  $0 verify 38-39"
         exit 1
         ;;
 esac

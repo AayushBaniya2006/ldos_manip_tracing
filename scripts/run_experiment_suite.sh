@@ -214,7 +214,7 @@ run_scenario() {
 
         # Launch Gazebo on unlimited CPUs
         log_info "Launching Gazebo on CPUs $GAZEBO_CPUS..."
-        "$SCRIPT_DIR/cpuset_launch.sh" "$GAZEBO_CPUS" "gazebo" \
+        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$GAZEBO_CPUS" "gazebo" \
             ros2 launch ldos_harness sim_only.launch.py headless:=true &
         GAZEBO_PID=$!
 
@@ -230,7 +230,7 @@ run_scenario() {
 
         # Launch ROS stack on LIMITED CPUs
         log_info "Launching ROS stack on CPUs $ROS_CPUS (LIMITED)..."
-        "$SCRIPT_DIR/cpuset_launch.sh" "$ROS_CPUS" "ros_stack" \
+        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$ROS_CPUS" "ros_stack" \
             ros2 launch ldos_harness ros_stack.launch.py &
         STACK_PID=$!
 
