@@ -116,6 +116,12 @@ class TrialResult:
     cpu_percent_samples: List[float] = field(default_factory=list)
     memory_percent: float = 0.0
 
+    # Per-core CPU utilization (for cpuset verification)
+    per_core_cpu_samples: List[List[float]] = field(default_factory=list)  # [sample][core]
+    per_core_cpu_mean: List[float] = field(default_factory=list)           # mean per core
+    per_core_cpu_max: List[float] = field(default_factory=list)            # max per core
+    active_cores: List[int] = field(default_factory=list)                  # cores with >5% mean usage
+
     def compute_derived_metrics(self):
         """Compute latency metrics from timestamps."""
         if self.t_planning_start > 0 and self.t_planning_end > 0:
@@ -195,25 +201,30 @@ class BenchmarkRunner(Node):
         self.get_logger().debug(f'Marker: {name} wall={wall_now:.6f}s ros={ros_now.nanoseconds}ns')
 
     def _start_cpu_sampling(self, sample_rate_hz: float = 10.0):
-        """Start background CPU sampling at specified rate."""
+        """Start background CPU sampling at specified rate (aggregate + per-core)."""
         self._cpu_samples: List[float] = []
+        self._per_core_cpu_samples: List[List[float]] = []
         self._cpu_sampling_active = True
         self._cpu_sample_interval = 1.0 / sample_rate_hz
 
         def sample_cpu():
             # Prime psutil (first call always returns 0)
-            psutil.cpu_percent(interval=None)
+            psutil.cpu_percent(interval=None, percpu=True)
             while self._cpu_sampling_active:
+                # Aggregate CPU%
                 cpu = psutil.cpu_percent(interval=None)
                 self._cpu_samples.append(cpu)
+                # Per-core CPU%
+                per_core = psutil.cpu_percent(interval=None, percpu=True)
+                self._per_core_cpu_samples.append(per_core)
                 time.sleep(self._cpu_sample_interval)
 
         self._cpu_thread = threading.Thread(target=sample_cpu, daemon=True)
         self._cpu_thread.start()
-        self.get_logger().debug(f'CPU sampling started at {sample_rate_hz}Hz')
+        self.get_logger().debug(f'CPU sampling started at {sample_rate_hz}Hz (per-core enabled)')
 
     def _stop_cpu_sampling(self):
-        """Stop CPU sampling and compute statistics."""
+        """Stop CPU sampling and compute statistics (aggregate + per-core)."""
         self._cpu_sampling_active = False
         if hasattr(self, '_cpu_thread'):
             self._cpu_thread.join(timeout=1.0)
@@ -226,6 +237,30 @@ class BenchmarkRunner(Node):
                 f'CPU: mean={self.result.cpu_percent_mean:.1f}%, '
                 f'max={self.result.cpu_percent_max:.1f}%, '
                 f'samples={len(self._cpu_samples)}'
+            )
+
+        # Per-core statistics
+        if self._per_core_cpu_samples:
+            self.result.per_core_cpu_samples = self._per_core_cpu_samples
+            num_cores = len(self._per_core_cpu_samples[0])
+            # Transpose: per_core_cpu_samples is [sample][core], we need [core][sample]
+            core_timeseries = [
+                [sample[c] for sample in self._per_core_cpu_samples]
+                for c in range(num_cores)
+            ]
+            self.result.per_core_cpu_mean = [
+                sum(ts) / len(ts) for ts in core_timeseries
+            ]
+            self.result.per_core_cpu_max = [
+                max(ts) for ts in core_timeseries
+            ]
+            # Active cores: mean usage > 5%
+            self.result.active_cores = [
+                c for c, mean in enumerate(self.result.per_core_cpu_mean) if mean > 5.0
+            ]
+            self.get_logger().info(
+                f'Per-core: {len(self.result.active_cores)}/{num_cores} active cores '
+                f'(>5% mean): {self.result.active_cores}'
             )
 
         # Capture memory at end of trial
@@ -561,6 +596,9 @@ def main():
         if result.cpu_percent_samples:
             print(f"CPU utilization: mean={result.cpu_percent_mean:.1f}%, max={result.cpu_percent_max:.1f}%")
             print(f"Memory utilization: {result.memory_percent:.1f}%")
+        if result.active_cores:
+            total_cores = len(result.per_core_cpu_mean) if result.per_core_cpu_mean else 0
+            print(f"Active cores: {result.active_cores} ({len(result.active_cores)}/{total_cores})")
 
     except Exception as e:
         print(f"FATAL: {e}", file=sys.stderr)
