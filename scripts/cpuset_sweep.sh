@@ -183,9 +183,20 @@ PYTHON_SCRIPT
         log_warn "No results found for $cpu_count CPU(s)"
     fi
 
-    # Cooldown between configurations
+    # Aggressive cleanup between configurations to prevent stale state
+    log_info "Cleaning up before next configuration..."
+    "$SCRIPT_DIR/cpuset_cleanup.sh" 2>/dev/null || true
+    pkill -9 -f "gz sim" 2>/dev/null || true
+    pkill -9 -f "gazebo" 2>/dev/null || true
+    pkill -9 -f "move_group" 2>/dev/null || true
+    pkill -9 -f "robot_state_pub" 2>/dev/null || true
+    pkill -9 -f "parameter_bridge" 2>/dev/null || true
+    pkill -9 -f "ros2.*launch" 2>/dev/null || true
+    pkill -9 -f "ros2.*control" 2>/dev/null || true
+    rm -rf "${WS_ROOT}/results/cpuset_limited" 2>/dev/null || true
+
     log_info "Cooldown before next configuration..."
-    sleep 30
+    sleep 15
 done
 
 # Print final summary
