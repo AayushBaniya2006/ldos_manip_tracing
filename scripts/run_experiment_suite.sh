@@ -23,6 +23,9 @@ SCENARIO_COOLDOWN=30      # Between scenarios (allow full system cooldown)
 MAX_RETRIES=2  # Retry failed trials up to this many times
 MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-/move_action}"
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
+CONFIG_FILE="$WS_ROOT/configs/experiment_config.yaml"
+ENABLE_TRACING="${ENABLE_TRACING:-1}"
+FAIL_FAST_START_STATE_INVALID_STREAK="${FAIL_FAST_START_STATE_INVALID_STREAK:-3}"
 
 # Colors
 RED='\033[0;31m'
@@ -79,6 +82,39 @@ source_ros() {
 # Source ROS environment (must be called before any ROS commands)
 source_ros
 
+read_config_value() {
+    local key_path="$1"
+    local default_value="$2"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "$default_value"
+        return 0
+    fi
+    python3 "$SCRIPT_DIR/update_config.py" --config "$CONFIG_FILE" --get "$key_path" --quiet 2>/dev/null || echo "$default_value"
+}
+
+CPU_LOAD_WORKERS="${CPU_LOAD_WORKERS:-$(read_config_value load_scenarios.cpu_load.num_workers 4)}"
+CPU_LOAD_PERCENT="${CPU_LOAD_PERCENT:-$(read_config_value load_scenarios.cpu_load.cpu_percent 80)}"
+MSG_LOAD_RATE_HZ="${MSG_LOAD_RATE_HZ:-$(read_config_value load_scenarios.msg_load.rate_hz 1000)}"
+MSG_LOAD_PUBLISHERS="${MSG_LOAD_PUBLISHERS:-$(read_config_value load_scenarios.msg_load.num_publishers 4)}"
+MSG_LOAD_PAYLOAD_SIZE="${MSG_LOAD_PAYLOAD_SIZE:-$(read_config_value load_scenarios.msg_load.payload_size_bytes 1024)}"
+
+validate_positive_int() {
+    local name="$1"
+    local value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        log_error "$name must be a non-negative integer (got: $value)"
+        exit 1
+    fi
+}
+
+validate_positive_int "CPU_LOAD_WORKERS" "$CPU_LOAD_WORKERS"
+validate_positive_int "CPU_LOAD_PERCENT" "$CPU_LOAD_PERCENT"
+validate_positive_int "MSG_LOAD_RATE_HZ" "$MSG_LOAD_RATE_HZ"
+validate_positive_int "MSG_LOAD_PUBLISHERS" "$MSG_LOAD_PUBLISHERS"
+validate_positive_int "MSG_LOAD_PAYLOAD_SIZE" "$MSG_LOAD_PAYLOAD_SIZE"
+validate_positive_int "ENABLE_TRACING" "$ENABLE_TRACING"
+validate_positive_int "FAIL_FAST_START_STATE_INVALID_STREAK" "$FAIL_FAST_START_STATE_INVALID_STREAK"
+
 # =============================================================================
 # PRE-FLIGHT CHECKS
 # =============================================================================
@@ -110,15 +146,61 @@ preflight_check() {
     fi
 
     # Check LTTng is available
-    if ! command -v lttng &>/dev/null; then
-        log_warn "LTTng not found. Tracing will be skipped."
+    if [ "$ENABLE_TRACING" -eq 0 ]; then
+        log_info "Tracing disabled for this run (ENABLE_TRACING=0)"
     else
-        # Check tracing group
-        if ! groups | grep -q tracing; then
-            log_warn "User not in 'tracing' group. Tracing may fail."
-            log_warn "  Fix: sudo usermod -aG tracing \$USER && logout/login"
+        if ! command -v lttng &>/dev/null; then
+            log_warn "LTTng not found. Tracing will be skipped."
+        else
+            # Check tracing group
+            if ! groups | grep -q tracing; then
+                log_warn "User not in 'tracing' group. Tracing may fail."
+                log_warn "  Fix: sudo usermod -aG tracing \$USER && logout/login"
+            fi
         fi
     fi
+
+    # Check common tooling used at runtime
+    for cmd in ros2 colcon python3 gz; do
+        if ! command -v "$cmd" &>/dev/null; then
+            log_error "Required command not found: $cmd"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # Scenario-specific tools
+    local -a preflight_scenarios=()
+    IFS=',' read -ra preflight_scenarios <<< "$SCENARIOS"
+    for scenario in "${preflight_scenarios[@]}"; do
+        case "$scenario" in
+            cpu_load)
+                if ! command -v stress-ng &>/dev/null; then
+                    log_error "cpu_load scenario requires stress-ng"
+                    errors=$((errors + 1))
+                fi
+                ;;
+            cpuset_limited)
+                if ! command -v taskset &>/dev/null; then
+                    log_error "cpuset_limited scenario requires taskset"
+                    errors=$((errors + 1))
+                fi
+                if ! command -v systemd-run &>/dev/null; then
+                    log_warn "systemd-run not found; cpuset launcher may fall back to taskset only"
+                fi
+                if [ -x "$SCRIPT_DIR/check_cpuset_support.sh" ]; then
+                    log_info "Verifying cgroups v2 cpuset delegation for cpuset_limited..."
+                    if ! "$SCRIPT_DIR/check_cpuset_support.sh" >/dev/null; then
+                        log_error "cpuset_limited requires real cpuset delegation; run:"
+                        log_error "  sudo ./scripts/setup_cpuset_delegation.sh"
+                        log_error "  # then logout/login and rerun make check_cpuset"
+                        errors=$((errors + 1))
+                    fi
+                else
+                    log_warn "check_cpuset_support.sh not executable; cannot verify cpuset delegation"
+                fi
+                ;;
+        esac
+    done
 
     # Check helper scripts exist and are executable
     for script in start_trace.sh stop_trace.sh; do
@@ -150,9 +232,14 @@ IFS=',' read -ra SCENARIO_ARRAY <<< "$SCENARIOS"
 EXPERIMENT_ID="exp_$(date +%Y%m%d_%H%M%S)"
 EXPERIMENT_LOG="$WS_ROOT/results/${EXPERIMENT_ID}_log.txt"
 mkdir -p "$WS_ROOT/results"
+EXPERIMENT_DIR="$WS_ROOT/results/$EXPERIMENT_ID"
+MANIFEST_DIR="$EXPERIMENT_DIR/manifest"
+mkdir -p "$MANIFEST_DIR"
+printf '%s\n' "$EXPERIMENT_ID" > "$WS_ROOT/results/.latest_experiment_id"
 
 log_info "Experiment ID: $EXPERIMENT_ID"
 log_info "Log file: $EXPERIMENT_LOG"
+log_info "Manifest dir: $MANIFEST_DIR"
 
 # Save experiment config
 cat > "$WS_ROOT/results/${EXPERIMENT_ID}_config.json" << EOF
@@ -165,6 +252,7 @@ cat > "$WS_ROOT/results/${EXPERIMENT_ID}_config.json" << EOF
     "cooldown_seconds": $COOLDOWN_SECONDS
 }
 EOF
+cp "$WS_ROOT/results/${EXPERIMENT_ID}_config.json" "$EXPERIMENT_DIR/config.json"
 
 # Track results
 declare -A SCENARIO_SUCCESS
@@ -173,11 +261,18 @@ declare -A SCENARIO_FAILED
 run_scenario() {
     local scenario="$1"
     local num_trials="$2"
+    local scenario_trial_manifest="$MANIFEST_DIR/${scenario}_trials.txt"
+    local scenario_trace_manifest="$MANIFEST_DIR/${scenario}_trace_sessions.txt"
 
     log_section "Scenario: $scenario"
 
     SCENARIO_SUCCESS[$scenario]=0
     SCENARIO_FAILED[$scenario]=0
+    : > "$scenario_trial_manifest"
+    : > "$scenario_trace_manifest"
+    local start_state_invalid_streak=0
+    local scenario_aborted=false
+    local scenario_abort_reason=""
 
     # Start the ROS stack once for all trials in this scenario
     log_info "Starting ROS stack for $scenario..."
@@ -211,10 +306,11 @@ run_scenario() {
         log_info "Total CPUs: $TOTAL_CPUS"
         log_info "Gazebo CPUs: $GAZEBO_CPUS (unlimited)"
         log_info "ROS Stack CPUs: $ROS_CPUS (LIMITED to $ROS_CPU_COUNT)"
+        log_info "Split cpuset mode: Gazebo/gz_ros2_control remain in Gazebo scope; ROS user-space nodes run in limited scope"
 
         # Launch Gazebo on unlimited CPUs
         log_info "Launching Gazebo on CPUs $GAZEBO_CPUS..."
-        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$GAZEBO_CPUS" "gazebo" \
+        CPUSET_ALLOW_TASKSET_FALLBACK=0 "$SCRIPT_DIR/cpuset_launch_v2.sh" "$GAZEBO_CPUS" "gazebo" \
             ros2 launch ldos_harness sim_only.launch.py headless:=true &
         GAZEBO_PID=$!
 
@@ -230,7 +326,7 @@ run_scenario() {
 
         # Launch ROS stack on LIMITED CPUs
         log_info "Launching ROS stack on CPUs $ROS_CPUS (LIMITED)..."
-        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$ROS_CPUS" "ros_stack" \
+        CPUSET_ALLOW_TASKSET_FALLBACK=0 "$SCRIPT_DIR/cpuset_launch_v2.sh" "$ROS_CPUS" "ros_stack" \
             ros2 launch ldos_harness ros_stack.launch.py &
         STACK_PID=$!
 
@@ -290,30 +386,41 @@ run_scenario() {
 
     # Start load generator if needed (not for cpuset_limited - it uses CPU isolation instead)
     LOAD_PID=""
-    if [ "$scenario" = "cpuset_limited" ]; then
-        log_info "cpuset_limited scenario: No load generator (using CPU isolation instead)"
-    elif [ "$scenario" = "cpu_load" ]; then
-        log_info "Starting CPU load..."
-        "$SCRIPT_DIR/cpu_load.sh" 4 $((num_trials * 120)) &
-        LOAD_PID=$!
+    start_load_generator() {
+        case "$scenario" in
+            cpuset_limited)
+                log_info "cpuset_limited scenario: No load generator (using CPU isolation instead)"
+                return 0
+                ;;
+            cpu_load)
+                log_info "Starting CPU load (workers=$CPU_LOAD_WORKERS load=${CPU_LOAD_PERCENT}%)..."
+                "$SCRIPT_DIR/cpu_load.sh" "$CPU_LOAD_WORKERS" 0 "$CPU_LOAD_PERCENT" &
+                LOAD_PID=$!
+                ;;
+            msg_load)
+                log_info "Starting message load (${MSG_LOAD_PUBLISHERS} pubs x ${MSG_LOAD_RATE_HZ} Hz, payload=${MSG_LOAD_PAYLOAD_SIZE}B)..."
+                "$SCRIPT_DIR/msg_load.sh" "$MSG_LOAD_RATE_HZ" "$MSG_LOAD_PUBLISHERS" 0 "$MSG_LOAD_PAYLOAD_SIZE" &
+                LOAD_PID=$!
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+
         log_info "Waiting for load to stabilize (10s)..."
         sleep 10
-        # Verify load is actually running
-        if ! kill -0 $LOAD_PID 2>/dev/null; then
-            log_error "CPU load generator died unexpectedly"
-            kill $STACK_PID 2>/dev/null || true
+        if ! kill -0 "$LOAD_PID" 2>/dev/null; then
+            log_error "Load generator died unexpectedly during startup"
             return 1
         fi
-    elif [ "$scenario" = "msg_load" ]; then
-        log_info "Starting message load..."
-        "$SCRIPT_DIR/msg_load.sh" 1000 4 $((num_trials * 120)) &
-        LOAD_PID=$!
-        log_info "Waiting for load to stabilize (10s)..."
-        sleep 10
-        # Verify load is actually running
-        if ! kill -0 $LOAD_PID 2>/dev/null; then
-            log_error "Message load generator died unexpectedly"
-            kill $STACK_PID 2>/dev/null || true
+        return 0
+    }
+
+    if [ "$scenario" = "cpuset_limited" ]; then
+        log_info "cpuset_limited scenario: No load generator (using CPU isolation instead)"
+    else
+        if ! start_load_generator; then
+            kill "$STACK_PID" 2>/dev/null || true
             return 1
         fi
     fi
@@ -345,8 +452,23 @@ run_scenario() {
         RESULT_DIR="$WS_ROOT/results/$scenario"
 
         log_info "Trial $trial/$num_trials: $TRIAL_ID"
+        printf '%s\n' "$TRIAL_ID" >> "$scenario_trial_manifest"
 
-        mkdir -p "$TRACE_DIR"
+        # Ensure load is still active before each trial (avoid silent no-load runs)
+        if [ "$scenario" = "cpu_load" ] || [ "$scenario" = "msg_load" ]; then
+            if [ -z "$LOAD_PID" ] || ! kill -0 "$LOAD_PID" 2>/dev/null; then
+                log_warn "Load generator not running before $TRIAL_ID, restarting..."
+                if ! start_load_generator; then
+                    log_error "Could not restart load generator"
+                    SCENARIO_FAILED[$scenario]=$((${SCENARIO_FAILED[$scenario]} + 1))
+                    continue
+                fi
+            fi
+        fi
+
+        if [ "$ENABLE_TRACING" -eq 1 ]; then
+            mkdir -p "$TRACE_DIR"
+        fi
         mkdir -p "$RESULT_DIR"
 
         # Collect metadata using Python for safe JSON encoding
@@ -399,15 +521,22 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
                 mkdir -p "$TRACE_DIR"
                 sleep 2  # Brief pause before retry
             fi
+            if [ "$ENABLE_TRACING" -eq 1 ]; then
+                printf '%s\n' "$TRACE_SESSION" >> "$scenario_trace_manifest"
+            fi
 
             # Start trace (check exit code for failure detection)
             TRACE_STARTED=false
-            if "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > "$TRACE_DIR/trace_start.log" 2>&1; then
-                TRACE_STARTED=true
+            if [ "$ENABLE_TRACING" -eq 1 ]; then
+                if "$SCRIPT_DIR/start_trace.sh" "$TRACE_SESSION" "$TRACE_DIR" > "$TRACE_DIR/trace_start.log" 2>&1; then
+                    TRACE_STARTED=true
+                else
+                    log_warn "Tracing failed to start. Check $TRACE_DIR/trace_start.log"
+                    # Save diagnostic info
+                    lttng list > "$TRACE_DIR/lttng_list.log" 2>&1 || true
+                fi
             else
-                log_warn "Tracing failed to start. Check $TRACE_DIR/trace_start.log"
-                # Save diagnostic info
-                lttng list > "$TRACE_DIR/lttng_list.log" 2>&1 || true
+                TRACE_STARTED=false
             fi
 
             sleep 1
@@ -422,7 +551,9 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
                 --action-name "$MOVEIT_ACTION_NAME" 2>&1 || BENCH_EXIT=$?
 
             # Stop trace
-            "$SCRIPT_DIR/stop_trace.sh" "$TRACE_SESSION" > /dev/null 2>&1 || true
+            if [ "$ENABLE_TRACING" -eq 1 ]; then
+                "$SCRIPT_DIR/stop_trace.sh" "$TRACE_SESSION" > /dev/null 2>&1 || true
+            fi
 
             # Verify result file was created
             RESULT_FILE="$RESULT_DIR/${TRIAL_ID}_result.json"
@@ -464,6 +595,63 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
             fi
         fi
 
+        # Inspect result semantics for invalid-run patterns (e.g., MoveIt START_STATE_INVALID -26)
+        if [ "${RESULT_FILE_EXISTS:-false}" = true ] && [ -f "$RESULT_FILE" ]; then
+            RESULT_STATUS=""
+            RESULT_MOVEIT_CODE=""
+            RESULT_MOVEIT_LABEL=""
+            read -r RESULT_STATUS RESULT_MOVEIT_CODE RESULT_MOVEIT_LABEL < <(
+                python3 - <<PY
+import json
+try:
+    with open("$RESULT_FILE") as f:
+        d = json.load(f)
+    status = d.get("status", "")
+    code = d.get("moveit_error_code", "")
+    label = d.get("moveit_error_label", "")
+    print(status, code, label)
+except Exception:
+    print("", "", "")
+PY
+            )
+
+            if [ "$RESULT_STATUS" = "start_state_invalid" ] || [ "${RESULT_MOVEIT_CODE:-}" = "-26" ]; then
+                start_state_invalid_streak=$((start_state_invalid_streak + 1))
+                log_warn "Detected START_STATE_INVALID on $TRIAL_ID (streak=${start_state_invalid_streak})"
+
+                DIAG_FILE="$RESULT_DIR/${TRIAL_ID}_diagnostics.txt"
+                {
+                    echo "trial_id=$TRIAL_ID"
+                    echo "scenario=$scenario"
+                    echo "timestamp=$(date -Iseconds)"
+                    echo "result_status=$RESULT_STATUS"
+                    echo "moveit_error_code=$RESULT_MOVEIT_CODE"
+                    echo "moveit_error_label=$RESULT_MOVEIT_LABEL"
+                    echo ""
+                    echo "=== ros2 action list ==="
+                    ros2 action list 2>&1 || true
+                    echo ""
+                    echo "=== ros2 control list_controllers ==="
+                    ros2 control list_controllers 2>&1 || true
+                    echo ""
+                    echo "=== ros2 node list ==="
+                    ros2 node list 2>&1 || true
+                } > "$DIAG_FILE"
+                log_warn "Captured diagnostics: $DIAG_FILE"
+
+                if [ "$FAIL_FAST_START_STATE_INVALID_STREAK" -gt 0 ] && \
+                   [ "$start_state_invalid_streak" -ge "$FAIL_FAST_START_STATE_INVALID_STREAK" ]; then
+                    scenario_aborted=true
+                    scenario_abort_reason="Repeated START_STATE_INVALID (MoveIt -26) streak reached ${FAIL_FAST_START_STATE_INVALID_STREAK}"
+                    log_error "$scenario_abort_reason"
+                    log_error "Aborting scenario early to avoid wasting invalid trials"
+                    break
+                fi
+            else
+                start_state_invalid_streak=0
+            fi
+        fi
+
         # Cooldown between trials
         if [ $trial -lt $num_trials ]; then
             sleep $COOLDOWN_SECONDS
@@ -493,12 +681,17 @@ with open('$RESULT_DIR/${TRIAL_ID}_metadata.json', 'w') as f:
     log_info "Cooling down (${SCENARIO_COOLDOWN}s) before next scenario..."
     sleep $SCENARIO_COOLDOWN
 
+    if [ "$scenario_aborted" = true ]; then
+        log_warn "Scenario $scenario aborted early: $scenario_abort_reason"
+    fi
     log_info "Scenario $scenario complete: ${SCENARIO_SUCCESS[$scenario]} success, ${SCENARIO_FAILED[$scenario]} failed"
 }
 
 # Run all scenarios
 for scenario in "${SCENARIO_ARRAY[@]}"; do
-    run_scenario "$scenario" "$NUM_TRIALS" 2>&1 | tee -a "$EXPERIMENT_LOG"
+    # Use process substitution instead of a pipeline so run_scenario executes in
+    # the current shell and can update SCENARIO_SUCCESS/SCENARIO_FAILED.
+    run_scenario "$scenario" "$NUM_TRIALS" > >(tee -a "$EXPERIMENT_LOG") 2>&1
 done
 
 log_section "Running Analysis"

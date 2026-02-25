@@ -24,8 +24,9 @@
 #   5. Move current shell into the cgroup
 #   6. Launch command - all children inherit the cgroup
 #
-# FALLBACK:
-#   If cgroup operations fail, falls back to taskset (weaker isolation)
+# FALLBACKS:
+#   1. Prefer systemd-run --user --scope -p AllowedCPUs=... (real cgroup cpuset)
+#   2. If unavailable and allowed, fall back to taskset (weaker isolation)
 
 set -euo pipefail
 
@@ -40,6 +41,32 @@ log_info() { echo -e "${GREEN}[CPUSET]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[CPUSET]${NC} $1"; }
 log_error() { echo -e "${RED}[CPUSET ERROR]${NC} $1"; }
 log_debug() { echo -e "${CYAN}[CPUSET DEBUG]${NC} $1"; }
+
+ALLOW_TASKSET_FALLBACK="${CPUSET_ALLOW_TASKSET_FALLBACK:-1}"
+ALLOW_SYSTEMD_SCOPE_FALLBACK="${CPUSET_ALLOW_SYSTEMD_SCOPE_FALLBACK:-1}"
+
+fallback_or_fail() {
+    local reason="$1"
+    log_error "$reason"
+    if [ "$ALLOW_SYSTEMD_SCOPE_FALLBACK" = "1" ] && command -v systemd-run >/dev/null 2>&1; then
+        local unit_name="ldos_${CGROUP_NAME}_$(date +%s)_$$"
+        log_warn "Falling back to systemd-run --user scope with AllowedCPUs (real cgroup cpuset)..."
+        log_info "Unit name: $unit_name"
+        exec systemd-run --user --scope \
+            -p AllowedCPUs="$CPUS" \
+            --unit="$unit_name" \
+            --description="LDOS $CGROUP_NAME (CPUs: $CPUS)" \
+            -- "${COMMAND[@]}"
+    fi
+    if [ "$ALLOW_TASKSET_FALLBACK" = "0" ]; then
+        log_error "Taskset fallback is disabled (CPUSET_ALLOW_TASKSET_FALLBACK=0)."
+        log_error "Aborting so results are not mislabeled as cpuset-isolated."
+        exit 2
+    fi
+    log_warn "Falling back to taskset (weaker isolation)..."
+    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
+    exec taskset -c "$CPUS" "${COMMAND[@]}"
+}
 
 # Validate arguments
 if [ $# -lt 3 ]; then
@@ -67,24 +94,19 @@ CGROUP_PATH="${CGROUP_BASE}/ldos_${CGROUP_NAME}.scope"
 
 log_info "Target cgroup: $CGROUP_PATH"
 log_info "CPU restriction: $CPUS"
+CURRENT_CGROUP_REL="$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null || true)"
+[ -n "$CURRENT_CGROUP_REL" ] && log_debug "Current process cgroup: $CURRENT_CGROUP_REL"
 
 # =============================================================================
 # STEP 1: Verify cpuset is delegated to user session
 # =============================================================================
 
 if [ ! -d "$CGROUP_BASE" ]; then
-    log_warn "User cgroup base not found: $CGROUP_BASE"
-    log_warn "This may mean systemd user session is not active"
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "User cgroup base not found: $CGROUP_BASE (systemd user session may not be active)"
 fi
 
 if [ ! -f "${CGROUP_BASE}/cgroup.controllers" ]; then
-    log_warn "cgroup.controllers not found in user cgroup"
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "cgroup.controllers not found in user cgroup"
 fi
 
 # Check if cpuset is available (delegated)
@@ -99,9 +121,7 @@ if ! echo "$AVAILABLE_CONTROLLERS" | grep -q "cpuset"; then
     log_error "  sudo ./scripts/setup_cpuset_delegation.sh"
     log_error "  # Then logout and login again"
     log_error ""
-    log_warn "Falling back to taskset (weaker isolation)..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "cpuset controller NOT available in user cgroup"
 fi
 
 log_info "cpuset controller is delegated"
@@ -117,12 +137,9 @@ log_debug "Current subtree_control: $CURRENT_SUBTREE"
 if ! echo "$CURRENT_SUBTREE" | grep -q "cpuset"; then
     log_info "Enabling cpuset in subtree_control..."
     if ! echo "+cpuset" > "$SUBTREE_CONTROL" 2>/dev/null; then
-        log_warn "Cannot enable cpuset in subtree_control"
         log_warn "This may be due to 'no internal process' constraint"
         log_warn "Try: logout and login again"
-        log_warn "Falling back to taskset..."
-        log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-        exec taskset -c "$CPUS" "${COMMAND[@]}"
+        fallback_or_fail "Cannot enable cpuset in subtree_control"
     fi
     log_info "cpuset enabled in subtree_control"
 else
@@ -149,10 +166,7 @@ fi
 
 log_info "Creating cgroup: $CGROUP_PATH"
 if ! mkdir -p "$CGROUP_PATH" 2>/dev/null; then
-    log_error "Cannot create cgroup directory: $CGROUP_PATH"
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "Cannot create cgroup directory: $CGROUP_PATH"
 fi
 
 # =============================================================================
@@ -161,29 +175,28 @@ fi
 
 # Verify cpuset.cpus file exists (confirms controller is enabled for this cgroup)
 if [ ! -f "${CGROUP_PATH}/cpuset.cpus" ]; then
-    log_error "cpuset.cpus not found in cgroup!"
     log_error "This means cpuset controller is not enabled for this cgroup"
     rmdir "$CGROUP_PATH" 2>/dev/null || true
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "cpuset.cpus not found in cgroup"
+fi
+
+# Set memory node first (required before cpuset.cpus on cgroups v2)
+# Use parent's effective mems to handle NUMA systems correctly.
+if [ -f "${CGROUP_PATH}/cpuset.mems" ]; then
+    PARENT_MEMS=$(cat "${CGROUP_BASE}/cpuset.mems.effective" 2>/dev/null || echo "")
+    [ -z "$PARENT_MEMS" ] && PARENT_MEMS=$(cat "${CGROUP_BASE}/cpuset.mems" 2>/dev/null || echo "0")
+    [ -z "$PARENT_MEMS" ] && PARENT_MEMS="0"
+    log_debug "Setting cpuset.mems = $PARENT_MEMS (from parent)"
+    if ! echo "$PARENT_MEMS" > "${CGROUP_PATH}/cpuset.mems" 2>/dev/null; then
+        log_warn "Could not set cpuset.mems=$PARENT_MEMS"
+    fi
 fi
 
 # Set CPU restriction
 log_info "Setting cpuset.cpus = $CPUS"
 if ! echo "$CPUS" > "${CGROUP_PATH}/cpuset.cpus" 2>/dev/null; then
-    log_error "Cannot write to cpuset.cpus"
     rmdir "$CGROUP_PATH" 2>/dev/null || true
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
-fi
-
-# Set memory node (required for cpuset to work)
-# On most systems, memory node 0 is fine. On NUMA systems, might need adjustment.
-if [ -f "${CGROUP_PATH}/cpuset.mems" ]; then
-    log_debug "Setting cpuset.mems = 0"
-    echo "0" > "${CGROUP_PATH}/cpuset.mems" 2>/dev/null || true
+    fallback_or_fail "Cannot write to cpuset.cpus"
 fi
 
 # =============================================================================
@@ -192,11 +205,9 @@ fi
 
 log_info "Moving shell (PID $$) to cgroup..."
 if ! echo $$ > "${CGROUP_PATH}/cgroup.procs" 2>/dev/null; then
-    log_error "Cannot move process to cgroup"
+    log_warn "Current shell may be in a systemd session scope and cannot be migrated into delegated user@ service subtree"
     rmdir "$CGROUP_PATH" 2>/dev/null || true
-    log_warn "Falling back to taskset..."
-    log_info "Launching with taskset -c $CPUS: ${COMMAND[*]}"
-    exec taskset -c "$CPUS" "${COMMAND[@]}"
+    fallback_or_fail "Cannot move process to cgroup"
 fi
 
 log_info "Shell moved to restricted cgroup"

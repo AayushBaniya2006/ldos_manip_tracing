@@ -29,7 +29,7 @@ ENV_SETUP := set +u; \
              for d in jazzy humble iron rolling; do \
                if [ -f "/opt/ros/$$d/setup.bash" ]; then source "/opt/ros/$$d/setup.bash"; break; fi; \
              done; \
-             if [ -f "$(WS_ROOT)/install/setup.bash" ]; then source "$(WS_ROOT)/install/setup.bash"; else echo "ERROR: Workspace not built. Run 'make setup' first." >&2; exit 1; fi; \
+             if [ -f "$(WS_ROOT)/install/setup.bash" ]; then source "$(WS_ROOT)/install/setup.bash"; fi; \
              if [ -f "$(VENV_DIR)/bin/activate" ]; then source "$(VENV_DIR)/bin/activate"; fi; \
              set -u
 
@@ -38,10 +38,11 @@ ENV_SETUP := set +u; \
         analyze_all analyze_cpu report help \
         sweep_cpu sweep_msg find_breaking \
         analyze_paths validate_weights hardware_info \
-        jupyter full_report check_deps venv deps \
+        jupyter full_report check_deps preflight venv deps \
         profile_cpu profile_moveit profile_baseline profile_cpu_load profile_msg_load \
         plot_cpu plot_all \
-        setup_cpuset check_cpuset run_cpuset sweep_cpuset cleanup_cpuset
+        setup_cpuset check_cpuset run_cpuset sweep_cpuset cleanup_cpuset \
+        cleanup_processes archive_latest
 
 # Default target
 all: help
@@ -63,7 +64,14 @@ bootstrap:
 check_deps:
 	@echo "=== Checking Dependencies ==="
 	chmod +x scripts/*.sh
+	./scripts/preflight_check.sh all || true
 	./scripts/setup_workspace.sh --check
+
+## Explicit host/tool preflight checks (OS, ROS 2, Gazebo, tracing, perf, Python deps)
+preflight:
+	@echo "=== Running Preflight Checks ==="
+	chmod +x scripts/*.sh
+	./scripts/preflight_check.sh all
 
 #------------------------------------------------------------------------------
 # Setup and Build
@@ -163,7 +171,7 @@ run_all:
 ## Analyze all collected traces and results
 analyze_all:
 	@echo "=== Analyzing all experiments ==="
-	$(ROS_SETUP)
+	$(ENV_SETUP)
 	./scripts/analyze_traces.sh all
 
 ## Generate report from analysis
@@ -277,14 +285,16 @@ run_cpuset:
 	@echo "=== Running cpuset-limited experiments (N=$(NUM_TRIALS)) ==="
 	@echo "ROS stack will be limited to $(ROS_CPU_COUNT) CPUs (default: 2)"
 	$(ROS_SETUP)
-	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh scripts/cleanup_harness_processes.sh scripts/archive_latest_experiment.sh
+	./scripts/check_cpuset_support.sh
 	./scripts/run_experiment_suite.sh $(NUM_TRIALS) cpuset_limited
 
 ## Run cpuset parameter sweep (1, 2, 4 CPUs)
 sweep_cpuset:
 	@echo "=== Running cpuset CPU sweep ==="
 	$(ROS_SETUP)
-	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh
+	chmod +x scripts/cpuset_launch.sh scripts/cpuset_launch_v2.sh scripts/cpuset_sweep.sh scripts/cpuset_cleanup.sh scripts/cleanup_harness_processes.sh scripts/archive_latest_experiment.sh
+	./scripts/check_cpuset_support.sh
 	./scripts/cpuset_sweep.sh $(NUM_TRIALS)
 
 ## Clean up leftover cgroups from failed experiments
@@ -292,6 +302,19 @@ cleanup_cpuset:
 	@echo "=== Cleaning up leftover cgroups ==="
 	chmod +x scripts/cpuset_cleanup.sh
 	./scripts/cpuset_cleanup.sh
+
+## Clean up ROS/Gazebo/LTTng/cpuset state between runs
+cleanup_processes:
+	@echo "=== Cleaning up harness processes and sessions ==="
+	chmod +x scripts/cleanup_harness_processes.sh scripts/cpuset_cleanup.sh
+	./scripts/cleanup_harness_processes.sh 5
+
+## Archive latest experiment artifacts (usage: make archive_latest TAG=name [SCENARIO=cpuset_limited])
+archive_latest:
+	@echo "=== Archiving latest experiment ==="
+	@test -n "$(TAG)" || (echo "ERROR: TAG is required. Example: make archive_latest TAG=cpuset_roscpu2_trials10 SCENARIO=cpuset_limited" >&2; exit 1)
+	chmod +x scripts/archive_latest_experiment.sh
+	./scripts/archive_latest_experiment.sh "$(TAG)" "$(SCENARIO)"
 
 #------------------------------------------------------------------------------
 # Parameter Sweeps
@@ -433,6 +456,7 @@ help:
 	@echo "First-Time Setup (Fresh CloudLab Node):"
 	@echo "  bootstrap      - Install ALL dependencies (~15-25 min)"
 	@echo "  check_deps     - Verify all dependencies installed"
+	@echo "  preflight      - Explicit host/tool preflight checks"
 	@echo ""
 	@echo "Setup & Build:"
 	@echo "  setup          - Setup workspace (after bootstrap)"
@@ -455,6 +479,8 @@ help:
 	@echo "  run_cpuset     - Run cpuset-limited experiments (N=$(NUM_TRIALS))"
 	@echo "  sweep_cpuset   - Sweep ROS stack CPUs (1, 2, 4)"
 	@echo "  cleanup_cpuset - Clean up leftover cgroups from failed experiments"
+	@echo "  cleanup_processes - Kill stale ROS/Gazebo/LTTng processes before reruns"
+	@echo "  archive_latest - Archive latest experiment artifacts (requires TAG=...)"
 	@echo ""
 	@echo "Parameter Sweeps (stress-ng based - backburner):"
 	@echo "  sweep_cpu      - Sweep CPU load (0-90%)"

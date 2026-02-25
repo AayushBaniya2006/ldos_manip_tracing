@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 PIDFILE="/tmp/ldos_cpu_monitor.pid"
+PROCESS_REGEX="${CPU_MONITOR_PROCESS_REGEX:-(move_group|controller|gz|gazebo|robot_state|parameter_|benchmark|joint_|ros2|create)}"
 
 start_monitor() {
     local OUTPUT_FILE="${1:-$WS_ROOT/results/cpu_usage.csv}"
@@ -34,13 +35,15 @@ start_monitor() {
 
             # Get CPU usage for ROS/Gazebo processes
             # Using ps with specific format for reliability
-            ps -eo pid,comm,%cpu,%mem,psr,state --no-headers 2>/dev/null | \
-            grep -E "(move_group|controller|gz|robot_state|ros2|benchmark|joint_)" | \
             while read -r pid comm cpu mem psr state; do
+                [ -n "${pid:-}" ] || continue
                 # Get cgroup info for cpuset verification
                 cgroup=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' | head -1 || echo "default")
                 echo "${TIMESTAMP},${comm},${pid},${cpu},${mem},${psr},${state},${cgroup}"
-            done >> "$OUTPUT_FILE"
+            done < <(
+                { ps -eo pid,comm,%cpu,%mem,psr,state --no-headers 2>/dev/null | \
+                  grep -E "$PROCESS_REGEX"; } || true
+            ) >> "$OUTPUT_FILE"
 
             sleep "$INTERVAL"
         done
@@ -88,10 +91,9 @@ verify_cpu_pinning() {
         IFS=',' read -ra expected_array <<< "$expected_cpus"
     fi
 
-    # Check ROS processes
-    ps -eo pid,comm,psr --no-headers 2>/dev/null | \
-    grep -E "(move_group|controller|robot_state|ros2|joint_)" | \
+    # Check ROS processes (use process substitution to avoid subshell variable loss)
     while read -r pid comm psr; do
+        [ -n "${pid:-}" ] || continue
         checked=$((checked + 1))
         local is_expected=false
 
@@ -108,7 +110,10 @@ verify_cpu_pinning() {
             echo "[FAIL] PID $pid ($comm) on CPU $psr - OUTSIDE expected range!"
             mismatches=$((mismatches + 1))
         fi
-    done
+    done < <(
+        { ps -eo pid,comm,psr --no-headers 2>/dev/null | \
+          grep -E "(move_group|controller|robot_state|parameter_|ros2|joint_|create)"; } || true
+    )
 
     echo ""
     if [ "$mismatches" -eq 0 ]; then
@@ -127,12 +132,14 @@ snapshot() {
     printf "%-8s %-20s %-6s %-8s %-10s\n" "PID" "COMMAND" "CPU" "CGROUP" "STATE"
     echo "--------------------------------------------------------------"
 
-    ps -eo pid,comm,psr,state --no-headers 2>/dev/null | \
-    grep -E "(move_group|controller|gz|robot_state|ros2|benchmark|joint_)" | \
     while read -r pid comm psr state; do
+        [ -n "${pid:-}" ] || continue
         local cgroup=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' | head -1 || echo "default")
         printf "%-8s %-20s %-6s %-8s %-10s\n" "$pid" "$comm" "$psr" "$cgroup" "$state"
-    done
+    done < <(
+        { ps -eo pid,comm,psr,state --no-headers 2>/dev/null | \
+          grep -E "$PROCESS_REGEX"; } || true
+    )
 
     echo ""
 }

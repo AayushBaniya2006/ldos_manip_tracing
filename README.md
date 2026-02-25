@@ -50,6 +50,7 @@ exit
 
 # 3. Verify and run
 cd ~/ldos_manip_tracing
+make preflight               # Explicit host/tool checks
 make smoke_test              # Verify setup works
 make run_all NUM_TRIALS=10   # Run full experiment suite
 
@@ -109,7 +110,7 @@ This motion is repeated under different load conditions:
 
 2. **CPU load REDUCES execution variance** - Standard deviation drops from 500ms to 93ms under load, suggesting more predictable behavior under controlled contention.
 
-3. **Message flood causes complete failure** - All 10 trials failed with `execution_failed` status. DDS middleware collapses under 4000 msg/s.
+3. **Message flood causes complete failure** - All 10 trials failed (typically `control_failed`, MoveIt error `-4`). DDS middleware collapses under 4000 msg/s.
 
 ---
 
@@ -152,7 +153,8 @@ ros2 run ldos_harness msg_flood_node.py --rate 1000 --topic /flood_topic_4 &
 - DDS discovery and transport queues overflow
 - MoveIt action server cannot receive feedback from controller
 - Controller returns `UNKNOWN` status
-- MoveIt reports `CONTROL_FAILED` (error code -4)
+- MoveIt commonly reports `CONTROL_FAILED` (error code `-4`)
+- Harness records this explicitly as `control_failed` (with raw MoveIt error code/label)
 
 ### CPU Isolation (cgroups v2 cpuset) - NEW
 
@@ -162,14 +164,16 @@ Instead of artificial CPU stress (stress-ng), this scenario uses **real CPU reso
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    CloudLab Node (auto-detect CPUs)                 │
 ├───────────────────────────────┬─────────────────────────────────────┤
-│   GAZEBO CPUSET (unlimited)   │   ROS STACK CPUSET (LIMITED)       │
+│   GAZEBO SCOPE (broad cpuset) │   ROS STACK SCOPE (LIMITED)        │
 │   ─────────────────────────   │   ───────────────────────────      │
 │   • gz-sim8 (Gazebo server)   │   • move_group (MoveIt)            │
-│                               │   • controller_manager              │
-│   (Physics simulation needs   │   • joint_trajectory_controller    │
-│    full resources for         │   • robot_state_publisher          │
-│    accurate timing)           │   • ros_gz_bridge (clock)          │
-│                               │   • benchmark_runner.py            │
+│                               │   • robot_state_publisher          │
+│   (Physics + gz_ros2_control  │   • ros_gz_bridge (clock)          │
+│    may run in this scope,     │   • benchmark_runner.py            │
+│    including controller mgr)  │                                     │
+│                               │                                     │
+│   (Receives all CPUs except   │                                     │
+│    the ROS-limited set)       │                                     │
 └───────────────────────────────┴─────────────────────────────────────┘
 ```
 
@@ -189,11 +193,45 @@ ROS_CPU_COUNT=1 make run_cpuset NUM_TRIALS=10
 ```
 
 **How it works:**
-- Uses `systemd-run --user --scope -p AllowedCPUs=X` (cgroups v2)
+- Attempts delegated cgroup cpuset placement first
+- If SSH session cgroup migration is denied, falls back to `systemd-run --user --scope -p AllowedCPUs=X` (still real cgroup cpuset)
 - No root required
-- Gazebo runs on unlimited CPUs (accurate physics)
-- ROS stack constrained to 1, 2, or 4 CPUs
+- Gazebo runs on a broad CPU set (all CPUs except the ROS-limited set)
+- ROS user-space stack constrained to 1, 2, or 4 CPUs
 - Auto-detects total CPU count at runtime
+
+**Interpretation caveat (important):**
+- This is a **split cpuset experiment**.
+- `move_group`, bridges, and benchmark userspace are constrained to the ROS-limited CPU set.
+- `gz_ros2_control` / `controller_manager` may execute inside the Gazebo process (Gazebo scope), depending on runtime embedding.
+- Treat the results as ROS userspace CPU-budget sensitivity under a split simulator/ROS scope design.
+
+**Valid cpuset runs vs invalid runs:**
+- Valid: log shows direct cpuset success or `systemd-run --user --scope ... AllowedCPUs`
+- Invalid for cpuset claims: log shows `Falling back to taskset`
+
+### CPU-Only cpuset Workflow (No LTTng Required)
+
+```bash
+# Clean stale state (recommended between runs)
+make cleanup_processes
+
+# Verify cgroup cpuset delegation/support
+make check_cpuset
+
+# CPU-count experiments (disable tracing noise)
+ENABLE_TRACING=0 ROS_CPU_COUNT=4 make run_cpuset NUM_TRIALS=10
+make analyze_all && make report
+make archive_latest TAG=cpuset_roscpu4_trials10 SCENARIO=cpuset_limited
+
+ENABLE_TRACING=0 ROS_CPU_COUNT=2 make run_cpuset NUM_TRIALS=10
+make analyze_all && make report
+make archive_latest TAG=cpuset_roscpu2_trials10 SCENARIO=cpuset_limited
+
+ENABLE_TRACING=0 ROS_CPU_COUNT=1 make run_cpuset NUM_TRIALS=10
+make analyze_all && make report
+make archive_latest TAG=cpuset_roscpu1_trials10 SCENARIO=cpuset_limited
+```
 
 **Expected Results:**
 
@@ -231,6 +269,8 @@ LTTng provides **kernel-level tracing** with minimal overhead (~2-5%), capturing
 ```
 LTTng Session -> CTF Binary -> babeltrace2 -> analyze_trace.py -> CSV/JSON
 ```
+
+`make analyze_all` always aggregates benchmark JSON results. If Python `bt2`/babeltrace2 bindings are unavailable, per-trace CTF analysis is skipped, but summary CSV/report generation still works.
 
 ---
 
@@ -299,6 +339,7 @@ make help              # Show all targets
 
 # === Setup ===
 make bootstrap         # Fresh CloudLab setup (installs everything)
+make preflight         # Explicit host/tool preflight checks
 make setup             # Build workspace only
 make clean             # Remove build artifacts
 
@@ -316,6 +357,8 @@ make run_all           # All scenarios
 make check_cpuset      # Verify cgroups v2 cpuset support
 make run_cpuset        # Run cpuset-limited experiments
 make sweep_cpuset      # Sweep ROS stack CPUs (1, 2, 4)
+make cleanup_processes # Kill stale ROS/Gazebo/LTTng state
+make archive_latest    # Archive latest experiment artifacts (TAG=...)
 
 # === Profiling ===
 make profile_baseline  # Baseline + CPU profiling
@@ -325,6 +368,9 @@ make profile_cpu       # Profile running stack
 # === Analysis ===
 make analyze_all       # Process traces and aggregate
 make report            # Summary statistics
+
+# Analysis/report prefer the latest experiment manifest written by
+# run_experiment_suite.sh to avoid mixing stale trial files from older runs.
 
 # === Parameter Sweeps ===
 make sweep_cpu         # Sweep CPU load 0-90% (stress-ng)
@@ -350,6 +396,8 @@ ldos_manip_tracing/
 │   ├── cpuset_launch.sh         # cgroups v2 CPU isolation wrapper
 │   ├── cpuset_sweep.sh          # CPU count parameter sweep
 │   ├── check_cpuset_support.sh  # Verify cgroups v2 support
+│   ├── cleanup_harness_processes.sh # Standard stale-process/session cleanup
+│   ├── archive_latest_experiment.sh # Archive latest run artifacts for reporting
 │   ├── cpu_profile.sh           # perf + FlameGraph
 │   └── analyze_traces.sh        # Post-processing pipeline
 ├── src/ldos_harness/            # ROS 2 package
@@ -448,6 +496,27 @@ pkill -9 -f gazebo; pkill -9 -f ros2; pkill -9 -f gzserver
 sleep 10
 make smoke_test
 ```
+
+### cpuset run fell back to `taskset` (invalid for cpuset claims)
+```bash
+make check_cpuset
+# If delegation checks fail:
+sudo ./scripts/setup_cpuset_delegation.sh
+exit
+# SSH back in, then:
+make cleanup_processes
+```
+
+### `START_STATE_INVALID` / MoveIt error `-26` during cpuset sweeps
+This usually indicates stale state or synchronization drift, not a CPU-scaling result.
+
+```bash
+make cleanup_processes
+ENABLE_TRACING=0 ROS_CPU_COUNT=4 make run_cpuset NUM_TRIALS=10
+```
+
+If repeated invalid starts occur, the harness captures per-trial diagnostics in:
+`results/cpuset_limited/*_diagnostics.txt`
 
 ### Tracing permission denied
 ```bash

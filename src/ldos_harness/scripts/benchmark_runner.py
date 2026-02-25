@@ -51,6 +51,34 @@ from moveit_msgs.msg import (
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Header
 
+MOVEIT_ERROR_LABELS = {
+    1: "SUCCESS",
+    99999: "FAILURE",
+    -1: "PLANNING_FAILED",
+    -2: "INVALID_MOTION_PLAN",
+    -3: "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE",
+    -4: "CONTROL_FAILED",
+    -5: "UNABLE_TO_AQUIRE_SENSOR_DATA",
+    -6: "TIMED_OUT",
+    -7: "PREEMPTED",
+    -8: "START_STATE_IN_COLLISION",
+    -9: "START_STATE_VIOLATES_PATH_CONSTRAINTS",
+    -10: "GOAL_IN_COLLISION",
+    -11: "GOAL_VIOLATES_PATH_CONSTRAINTS",
+    -12: "GOAL_CONSTRAINTS_VIOLATED",
+    -13: "INVALID_GROUP_NAME",
+    -14: "INVALID_GOAL_CONSTRAINTS",
+    -15: "INVALID_ROBOT_STATE",
+    -16: "INVALID_LINK_NAME",
+    -17: "INVALID_OBJECT_NAME",
+    -18: "FRAME_TRANSFORM_FAILURE",
+    -19: "COLLISION_CHECKING_UNAVAILABLE",
+    -20: "ROBOT_STATE_STALE",
+    -21: "SENSOR_INFO_STALE",
+    -22: "NO_IK_SOLUTION",
+    -26: "START_STATE_INVALID",
+}
+
 
 @dataclass
 class TimingMarker:
@@ -73,8 +101,10 @@ class TrialResult:
     """Complete result of a benchmark trial."""
     trial_id: str
     scenario: str
-    status: str  # success, planning_failed, execution_failed, timeout, error
+    status: str  # success, planning_failed, start_state_invalid, execution_failed, control_failed, timeout, error
     error_message: Optional[str] = None
+    moveit_error_code: Optional[int] = None
+    moveit_error_label: str = ""
 
     # Timestamps (wall clock, seconds since epoch)
     t_goal_sent: float = 0.0
@@ -330,6 +360,8 @@ class BenchmarkRunner(Node):
 
             # Process result
             error_code = result.error_code.val
+            self.result.moveit_error_code = int(error_code)
+            self.result.moveit_error_label = MOVEIT_ERROR_LABELS.get(int(error_code), "UNKNOWN")
 
             if error_code == 1:  # MoveItErrorCodes.SUCCESS
                 self.result.status = "success"
@@ -369,10 +401,29 @@ class BenchmarkRunner(Node):
 
             elif error_code == -1:  # PLANNING_FAILED
                 self.result.status = "planning_failed"
-                self.result.error_message = f"Planning failed with code {error_code}"
+                self.result.error_message = (
+                    f"MoveIt {self.result.moveit_error_label} ({error_code})"
+                )
+            elif error_code == -4:  # CONTROL_FAILED
+                self.result.status = "control_failed"
+                self.result.error_message = (
+                    f"MoveIt {self.result.moveit_error_label} ({error_code})"
+                )
+            elif error_code == -6:  # TIMED_OUT
+                self.result.status = "timeout"
+                self.result.error_message = (
+                    f"MoveIt {self.result.moveit_error_label} ({error_code})"
+                )
+            elif error_code == -26:  # START_STATE_INVALID
+                self.result.status = "start_state_invalid"
+                self.result.error_message = (
+                    f"MoveIt {self.result.moveit_error_label} ({error_code})"
+                )
             else:
                 self.result.status = "execution_failed"
-                self.result.error_message = f"MoveIt error code: {error_code}"
+                self.result.error_message = (
+                    f"MoveIt {self.result.moveit_error_label} ({error_code})"
+                )
 
         except Exception as e:
             self.result.status = "error"
@@ -572,9 +623,9 @@ def main():
         # Set exit code based on result
         if result.status == "success":
             exit_code = 0
-        elif result.status == "planning_failed":
+        elif result.status in ("planning_failed", "start_state_invalid"):
             exit_code = 1
-        elif result.status == "execution_failed":
+        elif result.status in ("execution_failed", "control_failed"):
             exit_code = 2
         elif result.status == "timeout":
             exit_code = 3
