@@ -21,8 +21,8 @@ start_monitor() {
     # Create output directory
     mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-    # Write CSV header (added cgroup column for cpuset verification)
-    echo "timestamp,process,pid,cpu_percent,mem_percent,cpu_id,state,cgroup" > "$OUTPUT_FILE"
+    # Write CSV header (includes cgroup and cpus_allowed for cpuset verification)
+    echo "timestamp,process,pid,cpu_percent,mem_percent,cpu_id,state,cgroup,cpus_allowed" > "$OUTPUT_FILE"
 
     echo "[CPU_MONITOR] Starting background monitor..."
     echo "[CPU_MONITOR] Output: $OUTPUT_FILE"
@@ -37,9 +37,10 @@ start_monitor() {
             # Using ps with specific format for reliability
             while read -r pid comm cpu mem psr state; do
                 [ -n "${pid:-}" ] || continue
-                # Get cgroup info for cpuset verification
+                # Get cgroup info and CPU affinity for cpuset verification
                 cgroup=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oE 'ldos_[^.]+\.scope' | head -1 || echo "default")
-                echo "${TIMESTAMP},${comm},${pid},${cpu},${mem},${psr},${state},${cgroup}"
+                cpus_allowed=$(awk '/Cpus_allowed_list/{print $2}' /proc/$pid/status 2>/dev/null || echo "")
+                echo "${TIMESTAMP},${comm},${pid},${cpu},${mem},${psr},${state},${cgroup},${cpus_allowed}"
             done < <(
                 { ps -eo pid,comm,%cpu,%mem,psr,state --no-headers 2>/dev/null | \
                   grep -E "$PROCESS_REGEX"; } || true
@@ -175,6 +176,39 @@ status_monitor() {
     return 1
 }
 
+# Verify that process affinity masks (Cpus_allowed_list) match expected CPUs
+# Usage: verify_affinity_mask <expected_cpus> [process_regex]
+verify_affinity_mask() {
+    local expected_cpus="$1"
+    local proc_regex="${2:-$PROCESS_REGEX}"
+    local mismatches=0
+    local checked=0
+
+    echo "[CPU_MONITOR] Verifying CPU affinity masks (expected: $expected_cpus)"
+    echo ""
+
+    while read -r pid comm; do
+        [ -n "${pid:-}" ] || continue
+        checked=$((checked + 1))
+
+        local actual_mask
+        actual_mask=$(awk '/Cpus_allowed_list/{print $2}' /proc/"$pid"/status 2>/dev/null || echo "unknown")
+
+        if [ "$actual_mask" = "$expected_cpus" ]; then
+            echo "[OK]   PID $pid ($comm) Cpus_allowed_list=$actual_mask"
+        else
+            echo "[FAIL] PID $pid ($comm) Cpus_allowed_list=$actual_mask (expected: $expected_cpus)"
+            mismatches=$((mismatches + 1))
+        fi
+    done < <(
+        { ps -eo pid,comm --no-headers 2>/dev/null | grep -E "$proc_regex"; } || true
+    )
+
+    echo ""
+    echo "[CPU_MONITOR] Checked $checked processes, $mismatches affinity violations"
+    [ "$mismatches" -eq 0 ]
+}
+
 case "${1:-}" in
     start)
         stop_monitor 2>/dev/null || true  # Stop any existing monitor
@@ -197,20 +231,30 @@ case "${1:-}" in
         fi
         verify_cpu_pinning "$2"
         ;;
+    verify_affinity)
+        if [ -z "${2:-}" ]; then
+            echo "Usage: $0 verify_affinity <expected_cpus> [process_regex]"
+            echo "Example: $0 verify_affinity 30-31"
+            exit 1
+        fi
+        verify_affinity_mask "$2" "${3:-}"
+        ;;
     *)
-        echo "Usage: $0 {start|stop|status|snapshot|verify} [options]"
+        echo "Usage: $0 {start|stop|status|snapshot|verify|verify_affinity} [options]"
         echo ""
         echo "Commands:"
         echo "  start [output_file] [interval]  Start background monitoring"
         echo "  stop                            Stop background monitoring"
         echo "  status                          Check if monitor is running"
         echo "  snapshot                        Show current CPU assignments"
-        echo "  verify <cpus>                   Verify processes are on expected CPUs"
+        echo "  verify <cpus>                   Verify processes are on expected CPUs (PSR)"
+        echo "  verify_affinity <cpus> [regex]  Verify process affinity masks match"
         echo ""
         echo "Examples:"
         echo "  $0 start /tmp/cpu.csv 0.5"
         echo "  $0 snapshot"
         echo "  $0 verify 38-39"
+        echo "  $0 verify_affinity 30-31"
         exit 1
         ;;
 esac

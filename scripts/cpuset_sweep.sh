@@ -181,7 +181,7 @@ archive_attempt_artifacts() {
 
 # Initialize results tracking
 RESULTS_FILE="$SWEEP_DIR/sweep_results.csv"
-echo "cpu_count,trials,successes,success_rate,planning_mean_ms,planning_std_ms,execution_mean_ms,execution_std_ms,total_mean_ms,total_std_ms,valid,invalid_reason,start_state_invalid_count,cpu_monitor_rows,experiment_id" > "$RESULTS_FILE"
+echo "cpu_count,trials,successes,success_rate,planning_mean_ms,planning_std_ms,execution_mean_ms,execution_std_ms,total_mean_ms,total_std_ms,valid,invalid_reason,start_state_invalid_count,cpu_monitor_rows,experiment_id,isolation_verified" > "$RESULTS_FILE"
 
 # Run experiments for each CPU configuration
 for cpu_count in $CPU_VALUES; do
@@ -252,9 +252,16 @@ for cpu_count in $CPU_VALUES; do
         archive_attempt_artifacts "$CPU_RESULT_DIR" "$ATTEMPT_DIR" "$EXPERIMENT_ID"
 
         INVALID_REASON=""
-        if [ -f "$EXPERIMENT_LOG" ] && grep -q "Falling back to taskset" "$EXPERIMENT_LOG"; then
-            INVALID_REASON="taskset_fallback"
-            log_warn "Detected taskset fallback in $EXPERIMENT_LOG (invalid for cpuset claims)"
+        # Check isolation verification from experiment log
+        ISOLATION_VERIFIED="unknown"
+        if [ -f "$EXPERIMENT_LOG" ]; then
+            if grep -q "CPU isolation VERIFIED:" "$EXPERIMENT_LOG"; then
+                ISOLATION_VERIFIED="true"
+            elif grep -q "CPU isolation PARTIAL:" "$EXPERIMENT_LOG" || grep -q "\[FAIL\].*affinity=" "$EXPERIMENT_LOG"; then
+                ISOLATION_VERIFIED="false"
+                INVALID_REASON="isolation_not_verified"
+                log_warn "CPU isolation verification FAILED for $cpu_count CPU(s)"
+            fi
         fi
 
         # Calculate summary statistics and detect invalid START_STATE_INVALID runs.
@@ -273,6 +280,7 @@ summary_row_file = "$SUMMARY_ROW_FILE"
 invalid_reason_seed = "$INVALID_REASON"
 cpu_monitor_rows = int("$CPU_MONITOR_ROWS" or "0")
 experiment_id = "$EXPERIMENT_ID"
+isolation_verified = "$ISOLATION_VERIFIED"
 
 result_dir = attempt_result_dir if os.path.isdir(attempt_result_dir) else root_result_dir
 result_files = sorted(glob.glob(os.path.join(result_dir, "*_result.json")))
@@ -338,6 +346,7 @@ summary = {
     "start_state_invalid_count": start_state_invalid_count,
     "cpu_monitor_rows": cpu_monitor_rows,
     "experiment_id": experiment_id,
+    "isolation_verified": isolation_verified,
     "status_counts": status_counts,
 }
 with open(summary_json, "w") as f:
@@ -359,6 +368,7 @@ row = ",".join([
     str(start_state_invalid_count),
     str(cpu_monitor_rows),
     experiment_id,
+    isolation_verified,
 ])
 with open(summary_row_file, "w") as f:
     f.write(row + "\n")

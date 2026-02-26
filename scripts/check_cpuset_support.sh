@@ -271,6 +271,32 @@ else
 fi
 
 # =============================================================================
+# Check 12: Functional taskset fork-inheritance test
+# =============================================================================
+
+echo ""
+echo -n "12. Testing taskset fork/exec inheritance... "
+
+# Pick CPU 0 for test (always available)
+TASKSET_RESULT=$(taskset -c 0 bash -c '
+    OWN=$(awk "/Cpus_allowed_list/{print \$2}" /proc/self/status 2>/dev/null)
+    CHILD=$(bash -c "awk \"/Cpus_allowed_list/{print \\\$2}\" /proc/self/status 2>/dev/null")
+    if [ "$OWN" = "0" ] && [ "$CHILD" = "0" ]; then
+        echo "PASS"
+    else
+        echo "FAIL own=$OWN child=$CHILD"
+    fi
+' 2>/dev/null || echo "FAIL")
+
+if echo "$TASKSET_RESULT" | grep -q "^PASS"; then
+    echo -e "$PASS taskset restriction inherited by child processes"
+else
+    echo -e "$FAIL taskset inheritance test failed: $TASKSET_RESULT"
+    echo "   This is critical for CPU isolation"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 

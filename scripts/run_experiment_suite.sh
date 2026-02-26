@@ -310,7 +310,7 @@ run_scenario() {
 
         # Launch Gazebo on unlimited CPUs
         log_info "Launching Gazebo on CPUs $GAZEBO_CPUS..."
-        CPUSET_ALLOW_TASKSET_FALLBACK=0 "$SCRIPT_DIR/cpuset_launch_v2.sh" "$GAZEBO_CPUS" "gazebo" \
+        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$GAZEBO_CPUS" "gazebo" \
             ros2 launch ldos_harness sim_only.launch.py headless:=true &
         GAZEBO_PID=$!
 
@@ -326,7 +326,7 @@ run_scenario() {
 
         # Launch ROS stack on LIMITED CPUs
         log_info "Launching ROS stack on CPUs $ROS_CPUS (LIMITED)..."
-        CPUSET_ALLOW_TASKSET_FALLBACK=0 "$SCRIPT_DIR/cpuset_launch_v2.sh" "$ROS_CPUS" "ros_stack" \
+        "$SCRIPT_DIR/cpuset_launch_v2.sh" "$ROS_CPUS" "ros_stack" \
             ros2 launch ldos_harness ros_stack.launch.py &
         STACK_PID=$!
 
@@ -381,6 +381,40 @@ run_scenario() {
             return 1
         else
             log_warn "Stack ready but controllers may not be fully active"
+        fi
+    fi
+
+    # Verify CPU isolation for cpuset_limited scenario
+    ISOLATION_VERIFIED=""
+    if [ "$scenario" = "cpuset_limited" ]; then
+        log_info "Verifying CPU isolation (checking process affinity masks)..."
+        sleep 3  # Allow children to fully spawn
+
+        ISOLATION_VERIFIED="true"
+        local verify_mismatches=0
+        local verify_checked=0
+        for pid in $(pgrep -f "move_group|robot_state_pub|parameter_bridge" 2>/dev/null || true); do
+            local actual_mask
+            actual_mask=$(awk '/Cpus_allowed_list/{print $2}' /proc/"$pid"/status 2>/dev/null || echo "unknown")
+            local proc_name
+            proc_name=$(awk '/^Name:/{print $2}' /proc/"$pid"/status 2>/dev/null || echo "?")
+            verify_checked=$((verify_checked + 1))
+            if [ "$actual_mask" = "$ROS_CPUS" ]; then
+                log_info "  [OK] PID $pid ($proc_name) affinity=$actual_mask"
+            else
+                log_warn "  [FAIL] PID $pid ($proc_name) affinity=$actual_mask (expected $ROS_CPUS)"
+                verify_mismatches=$((verify_mismatches + 1))
+                ISOLATION_VERIFIED="false"
+            fi
+        done
+
+        if [ "$verify_checked" -eq 0 ]; then
+            log_warn "No ROS processes found for isolation verification (processes may not have spawned yet)"
+            ISOLATION_VERIFIED="unknown"
+        elif [ "$verify_mismatches" -eq 0 ]; then
+            log_info "CPU isolation VERIFIED: $verify_checked processes restricted to $ROS_CPUS"
+        else
+            log_warn "CPU isolation PARTIAL: $verify_mismatches/$verify_checked processes have wrong affinity"
         fi
     fi
 
