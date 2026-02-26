@@ -194,7 +194,12 @@ verify_affinity_mask() {
         local actual_mask
         actual_mask=$(awk '/Cpus_allowed_list/{print $2}' /proc/"$pid"/status 2>/dev/null || echo "unknown")
 
-        if [ "$actual_mask" = "$expected_cpus" ]; then
+        # Normalize both for comparison: "N-N" -> "N" for single CPUs
+        local norm_actual="${actual_mask}"
+        local norm_expected="${expected_cpus}"
+        [[ "$norm_actual" =~ ^([0-9]+)-\1$ ]] && norm_actual="${BASH_REMATCH[1]}"
+        [[ "$norm_expected" =~ ^([0-9]+)-\1$ ]] && norm_expected="${BASH_REMATCH[1]}"
+        if [ "$norm_actual" = "$norm_expected" ]; then
             echo "[OK]   PID $pid ($comm) Cpus_allowed_list=$actual_mask"
         else
             echo "[FAIL] PID $pid ($comm) Cpus_allowed_list=$actual_mask (expected: $expected_cpus)"

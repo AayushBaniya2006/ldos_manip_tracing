@@ -96,13 +96,33 @@ This motion is repeated under different load conditions:
 
 ## Results Summary
 
-### Experiment Results (January 2026, CloudLab AMD EPYC)
+### Stress Test Results (January 2026, CloudLab AMD EPYC)
 
 | Scenario | Trials | Success | Planning (ms) | Execution (ms) | Total (ms) |
 |----------|--------|---------|---------------|----------------|------------|
 | **Baseline** | 11 | 100% | 15.6 +/- 4.1 | 656.2 +/- 500.4 | 673.7 +/- 501.5 |
 | **CPU Load** | 11 | 100% | 13.6 +/- 1.2 | 529.4 +/- 93.1 | 545.0 +/- 93.8 |
 | **Msg Load** | 10 | **0%** | 13.5 +/- 4.0 | - | **FAILED** |
+
+### CPU Isolation Sweep Results (February 2026, CloudLab AMD EPYC 32-core)
+
+CPU isolation via `taskset` (sched_setaffinity), verified by `/proc/PID/status` `Cpus_allowed_list`. All ROS processes confirmed pinned to designated CPUs via independent CPU monitor data.
+
+| ROS CPUs | Trials | Success | Planning (ms) | Execution (ms) | Total (ms) | Isolation Verified |
+|----------|--------|---------|---------------|----------------|------------|--------------------|
+| **1** | 5 | 100% | 7.75 +/- 3.65 | 761.33 +/- 349.98 | 771.12 +/- 348.58 | Yes (CPU monitor) |
+| **2** | 5 | 100% | 7.40 +/- 5.10 | 490.68 +/- 109.32 | 500.02 +/- 110.68 | Yes |
+| **4** | 5 | 100% | 8.90 +/- 5.35 | 490.73 +/- 144.42 | 501.66 +/- 142.86 | Yes |
+| **8** | 5 | 100% | 8.86 +/- 4.33 | 510.69 +/- 157.99 | 521.60 +/- 154.49 | Yes |
+
+**CPU Monitor Confirmation (per-process CPU pinning):**
+
+| Config | robot_state_pub | parameter_bridge | move_group | Expected |
+|--------|----------------|-----------------|------------|----------|
+| 1-CPU | [31] | [31] | [31] | 31 |
+| 2-CPU | [30,31] | [30,31] | [30,31] | 30-31 |
+| 4-CPU | [28-31] | [28-31] | [28-31] | 28-31 |
+| 8-CPU | [24-31] | [24-31] | [24-31] | 24-31 |
 
 ### Observations
 
@@ -111,6 +131,14 @@ This motion is repeated under different load conditions:
 2. **CPU load REDUCES execution variance** - Standard deviation drops from 500ms to 93ms under load, suggesting more predictable behavior under controlled contention.
 
 3. **Message flood causes complete failure** - All 10 trials failed (typically `control_failed`, MoveIt error `-4`). DDS middleware collapses under 4000 msg/s.
+
+4. **1-CPU restriction causes 55% execution latency increase** - Single-core time-sharing between `move_group`, `robot_state_publisher`, and `parameter_bridge` degrades execution from ~490ms to ~761ms with significantly higher variance (std=350ms vs ~110ms).
+
+5. **Workload saturates at 2 CPUs** - 2-CPU and 4-CPU configs produce statistically identical execution latencies (490.68 vs 490.73 ms). Additional CPUs beyond 2 provide no benefit for this manipulation workload.
+
+6. **Planning latency is CPU-independent** - RRTConnect planning time (~7-9ms) is unaffected by CPU count. The single-threaded planner completes too fast for CPU restriction to matter on this hardware.
+
+7. **Isolation mechanism: taskset works, cgroups fail from SSH** - cgroups v2 cpuset enhancement consistently fails due to cross-branch migration restrictions from SSH session scopes. `taskset` (sched_setaffinity) provides complete isolation — affinity is inherited across `fork(2)` and preserved across `execve(2)`, covering all ROS 2 launch child processes.
 
 ---
 

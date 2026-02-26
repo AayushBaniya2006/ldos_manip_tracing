@@ -301,7 +301,13 @@ run_scenario() {
         ROS_CPU_END=$((TOTAL_CPUS - 1))
 
         GAZEBO_CPUS="0-${GAZEBO_CPU_END}"
-        ROS_CPUS="${ROS_CPU_START}-${ROS_CPU_END}"
+        # When start==end (single CPU), kernel reports Cpus_allowed_list as just "N"
+        # not "N-N", so we must match that format for verification
+        if [ "$ROS_CPU_START" -eq "$ROS_CPU_END" ]; then
+            ROS_CPUS="$ROS_CPU_START"
+        else
+            ROS_CPUS="${ROS_CPU_START}-${ROS_CPU_END}"
+        fi
 
         log_info "Total CPUs: $TOTAL_CPUS"
         log_info "Gazebo CPUs: $GAZEBO_CPUS (unlimited)"
@@ -399,7 +405,12 @@ run_scenario() {
             local proc_name
             proc_name=$(awk '/^Name:/{print $2}' /proc/"$pid"/status 2>/dev/null || echo "?")
             verify_checked=$((verify_checked + 1))
-            if [ "$actual_mask" = "$ROS_CPUS" ]; then
+            # Normalize both for comparison: "N-N" -> "N" for single CPUs
+            local norm_actual="${actual_mask}"
+            local norm_expected="${ROS_CPUS}"
+            [[ "$norm_actual" =~ ^([0-9]+)-\1$ ]] && norm_actual="${BASH_REMATCH[1]}"
+            [[ "$norm_expected" =~ ^([0-9]+)-\1$ ]] && norm_expected="${BASH_REMATCH[1]}"
+            if [ "$norm_actual" = "$norm_expected" ]; then
                 log_info "  [OK] PID $pid ($proc_name) affinity=$actual_mask"
             else
                 log_warn "  [FAIL] PID $pid ($proc_name) affinity=$actual_mask (expected $ROS_CPUS)"
