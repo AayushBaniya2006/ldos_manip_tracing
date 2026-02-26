@@ -249,10 +249,12 @@ def analyze_trial_results(result_dir: Path, param_value: float) -> TrialResult:
 
     df = pd.DataFrame(rows)
     n_trials = len(df)
-    n_success = len(df[df.get('status', 'success') == 'success']) if 'status' in df.columns else n_trials
-
-    # Compute latency stats (only for successful trials)
-    successful = df[df.get('status', 'success') == 'success'] if 'status' in df.columns else df
+    if 'status' in df.columns:
+        n_success = len(df[df['status'] == 'success'])
+        successful = df[df['status'] == 'success']
+    else:
+        n_success = n_trials
+        successful = df
     latency_col = 'total_latency_ms'
 
     if latency_col in successful.columns and len(successful) > 0:

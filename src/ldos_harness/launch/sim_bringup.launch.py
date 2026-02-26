@@ -28,7 +28,6 @@ from launch.substitutions import (
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
-    PythonExpression,
 )
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
@@ -151,19 +150,24 @@ def generate_launch_description():
     # Gazebo Harmonic launch
     # When headless=true: use -s (server only) + --headless-rendering
     # When headless=false: just -r (run immediately with GUI)
-    gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_ros_gz_sim, "launch", "gz_sim.launch.py")
-        ),
-        launch_arguments={
-            "gz_args": PythonExpression([
-                "'-s --headless-rendering -r empty.sdf' if '",
-                headless,
-                "' == 'true' else '-r empty.sdf'"
-            ]),
-            "on_exit_shutdown": "true",
-        }.items(),
-    )
+    def create_gz_sim(context):
+        headless_val = LaunchConfiguration("headless").perform(context).lower() == "true"
+        world_val = LaunchConfiguration("world").perform(context).strip() or "empty.sdf"
+        if headless_val:
+            gz_args = f"-s --headless-rendering -r {world_val}"
+        else:
+            gz_args = f"-r {world_val}"
+        return [IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_ros_gz_sim, "launch", "gz_sim.launch.py")
+            ),
+            launch_arguments={
+                "gz_args": gz_args,
+                "on_exit_shutdown": "true",
+            }.items(),
+        )]
+
+    gz_sim = OpaqueFunction(function=create_gz_sim)
 
     # Spawn robot in Gazebo
     spawn_robot = Node(
@@ -180,7 +184,10 @@ def generate_launch_description():
     )
 
     # Load controllers after robot is spawned
-    # Joint State Broadcaster
+    # Controllers are loaded SEQUENTIALLY using event handlers to avoid race conditions.
+    # Each controller waits for the previous one to finish loading before starting.
+
+    # Joint State Broadcaster (loaded first, others depend on it)
     load_joint_state_broadcaster = ExecuteProcess(
         cmd=[
             "ros2", "control", "load_controller", "--set-state", "active",
@@ -189,7 +196,7 @@ def generate_launch_description():
         output="screen",
     )
 
-    # Panda Arm Controller (Joint Trajectory Controller)
+    # Panda Arm Controller (loaded after joint_state_broadcaster completes)
     load_panda_arm_controller = ExecuteProcess(
         cmd=[
             "ros2", "control", "load_controller", "--set-state", "active",
@@ -198,13 +205,27 @@ def generate_launch_description():
         output="screen",
     )
 
-    # Panda Hand Controller
+    # Panda Hand Controller (loaded after panda_arm_controller completes)
     load_panda_hand_controller = ExecuteProcess(
         cmd=[
             "ros2", "control", "load_controller", "--set-state", "active",
             "panda_hand_controller"
         ],
         output="screen",
+    )
+
+    # Chain controllers: JSB -> arm -> hand (sequential, event-driven)
+    arm_after_jsb = RegisterEventHandler(
+        OnProcessExit(
+            target_action=load_joint_state_broadcaster,
+            on_exit=[load_panda_arm_controller],
+        )
+    )
+    hand_after_arm = RegisterEventHandler(
+        OnProcessExit(
+            target_action=load_panda_arm_controller,
+            on_exit=[load_panda_hand_controller],
+        )
     )
 
     # Bridge for clock (sim time)
@@ -222,10 +243,10 @@ def generate_launch_description():
 
     def create_delayed_controllers(context):
         base_delay = float(LaunchConfiguration("controller_delay").perform(context))
+        # Only the first controller (JSB) is timer-delayed.
+        # Subsequent controllers are triggered by OnProcessExit event handlers.
         return [
             TimerAction(period=base_delay, actions=[load_joint_state_broadcaster]),
-            TimerAction(period=base_delay + 2.0, actions=[load_panda_arm_controller]),
-            TimerAction(period=base_delay + 3.0, actions=[load_panda_hand_controller]),
         ]
 
     delayed_spawn = OpaqueFunction(function=create_delayed_spawn)
@@ -250,6 +271,9 @@ def generate_launch_description():
             gz_sim,
             delayed_clock_bridge,  # Wait for Gazebo before clock bridge
             delayed_spawn,  # Uses spawn_delay argument
-            delayed_controllers,  # Uses controller_delay argument
+            delayed_controllers,  # Timer-delayed JSB (first controller only)
+            # Event-driven chain: JSB exit -> arm controller -> hand controller
+            arm_after_jsb,
+            hand_after_arm,
         ]
     )

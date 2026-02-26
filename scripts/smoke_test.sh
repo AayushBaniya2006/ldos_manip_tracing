@@ -16,10 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Configurable parameters
-MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
-# INIT_WAIT must be > moveit_delay (25s) + MoveIt init time (~10s)
-INIT_WAIT="${INIT_WAIT:-40}"
-STACK_TIMEOUT="${STACK_TIMEOUT:-60}"
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-/move_action}"
+# Startup timeout for polling readiness (action + controller active)
+STACK_TIMEOUT="${STACK_TIMEOUT:-90}"
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-30}"
 
 # Colors for output
@@ -125,33 +124,42 @@ run_smoke_test() {
     RESULT_DIR="$WS_ROOT/results/smoke"
     mkdir -p "$RESULT_DIR"
 
-    # Start the stack in a new process group
+    # Start the stack (capture the actual ros2 launch PID, no timeout wrapper)
     log_info "Starting full stack (timeout: ${STACK_TIMEOUT}s)..."
-    set -m  # Enable job control for process groups
-    timeout "$STACK_TIMEOUT" ros2 launch ldos_harness full_stack.launch.py \
+    ros2 launch ldos_harness full_stack.launch.py \
         headless:=true \
         use_rviz:=false \
-        2>&1 | tee "$RESULT_DIR/stack.log" &
+        > "$RESULT_DIR/stack.log" 2>&1 &
     STACK_PID=$!
-    set +m
 
     log_info "Stack PID: $STACK_PID"
 
-    # Wait for initialization with progress
-    log_info "Waiting for stack initialization (${INIT_WAIT}s)..."
-    for i in $(seq 1 $INIT_WAIT); do
+    # Poll readiness (MoveGroup action + active arm controller)
+    log_info "Waiting for stack readiness (polling, max ${STACK_TIMEOUT}s)..."
+    READY=false
+    for ((elapsed=0; elapsed<STACK_TIMEOUT; elapsed+=2)); do
+        if ! kill -0 "$STACK_PID" 2>/dev/null; then
+            log_fail "Stack process died during initialization"
+            tail -50 "$RESULT_DIR/stack.log" || true
+            exit 1
+        fi
+        if ros2 action list 2>/dev/null | grep -q "$MOVEIT_ACTION_NAME"; then
+            if ros2 control list_controllers 2>/dev/null | grep -q "panda_arm_controller.*active"; then
+                READY=true
+                log_pass "Stack ready after ~${elapsed}s (action + controller active)"
+                break
+            fi
+        fi
         echo -n "."
-        sleep 1
+        sleep 2
     done
     echo ""
 
-    # Check if stack is still running
-    if ! kill -0 "$STACK_PID" 2>/dev/null; then
-        log_fail "Stack process died during initialization"
-        cat "$RESULT_DIR/stack.log" | tail -50
+    if [[ "$READY" != true ]]; then
+        log_fail "Stack not ready within ${STACK_TIMEOUT}s"
+        tail -50 "$RESULT_DIR/stack.log" || true
         exit 1
     fi
-    log_pass "Stack is running"
 
     # Check MoveGroup action availability
     log_info "Checking MoveGroup action availability (looking for $MOVEIT_ACTION_NAME)..."
@@ -186,15 +194,33 @@ run_smoke_test() {
         log_warn "Benchmark exited with code: $BENCH_EXIT"
     fi
 
-    # Check result file
+    # Check result file and validate status
     RESULT_FILE="$RESULT_DIR/${TRIAL_ID}_result.json"
     if [[ -f "$RESULT_FILE" ]]; then
         log_pass "Result file created: $RESULT_FILE"
 
-        # Parse and display status
+        # Parse and validate benchmark status
+        BENCH_STATUS="unknown"
         if command -v python3 &>/dev/null; then
-            STATUS=$(python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(f'Status: {d.get(\"status\", \"unknown\")}')" 2>/dev/null || echo "Status: parse error")
-            log_info "$STATUS"
+            BENCH_STATUS=$(python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(d.get('status', 'unknown'))" 2>/dev/null || echo "parse_error")
+            log_info "Benchmark status: $BENCH_STATUS"
+        fi
+
+        if [[ "$BENCH_STATUS" != "success" ]]; then
+            log_fail "Benchmark did not succeed (status: $BENCH_STATUS)"
+            # Show error details from result file
+            if command -v python3 &>/dev/null; then
+                python3 -c "
+import json
+d = json.load(open('$RESULT_FILE'))
+err = d.get('error_message', '')
+code = d.get('moveit_error_code', '')
+label = d.get('moveit_error_label', '')
+if err: print(f'  Error: {err}')
+if code: print(f'  MoveIt code: {code} ({label})')
+" 2>/dev/null || true
+            fi
+            exit 1
         fi
     else
         log_fail "No result file created"
@@ -207,7 +233,7 @@ run_smoke_test() {
     # Final summary
     echo ""
     log_info "=== Smoke Test Complete ==="
-    log_pass "All checks passed!"
+    log_pass "All checks passed (benchmark status: success)"
 
     return 0
 }

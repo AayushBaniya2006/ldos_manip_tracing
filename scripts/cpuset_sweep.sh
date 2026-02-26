@@ -1,12 +1,16 @@
 #!/bin/bash
 # cpuset_sweep.sh - Run experiments with varying CPU allocations
 #
-# Usage: ./cpuset_sweep.sh [num_trials] [cpu_values]
+# Usage:
+#   ./cpuset_sweep.sh [num_trials] [cpu_values]        # positional args
+#   ./cpuset_sweep.sh --trials 10 --cpus "1 2 4 8"     # named flags
+#   ./cpuset_sweep.sh --cpus "1,2,4,8" --trials 5      # commas OK
 #
 # Examples:
-#   ./cpuset_sweep.sh           # Default: 10 trials, sweep 1,2,4 CPUs
-#   ./cpuset_sweep.sh 5         # 5 trials per CPU config
-#   ./cpuset_sweep.sh 10 "1 2 4 8"  # Custom CPU values
+#   ./cpuset_sweep.sh                     # Default: 10 trials, sweep 1,2,4 CPUs
+#   ./cpuset_sweep.sh 5                   # 5 trials per CPU config
+#   ./cpuset_sweep.sh 10 "1 2 4 8"       # Custom CPU values (positional)
+#   ./cpuset_sweep.sh --trials 10 --cpus "1,2,3,4,6,8"  # Named flags
 #
 # This script runs the cpuset_limited scenario with different ROS stack
 # CPU allocations to find the breaking point where performance degrades.
@@ -28,9 +32,68 @@ log_warn() { echo -e "${YELLOW}[SWEEP]${NC} $1"; }
 log_error() { echo -e "${RED}[SWEEP ERROR]${NC} $1"; }
 log_header() { echo -e "\n${CYAN}========================================${NC}"; echo -e "${CYAN} $1${NC}"; echo -e "${CYAN}========================================${NC}\n"; }
 
-# Configuration
-NUM_TRIALS="${1:-10}"
-CPU_VALUES="${2:-1 2 4}"
+# Parse arguments: support both positional and named flags
+NUM_TRIALS=""
+CPU_VALUES=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --trials|-t)
+            NUM_TRIALS="$2"
+            shift 2
+            ;;
+        --cpus|--cpu-list|-c)
+            CPU_VALUES="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--trials N] [--cpus \"1 2 4 8\"]"
+            echo "       $0 [num_trials] [cpu_values]"
+            echo ""
+            echo "Options:"
+            echo "  --trials, -t N          Number of trials per CPU config (default: 10)"
+            echo "  --cpus, --cpu-list, -c  Space or comma-separated CPU counts (default: 1 2 4)"
+            echo ""
+            echo "Environment variables:"
+            echo "  ENABLE_TRACING_SWEEP    Enable LTTng tracing (default: 0)"
+            echo "  MAX_INVALID_RERUNS      Retry invalid runs (default: 1)"
+            exit 0
+            ;;
+        *)
+            # Positional argument fallback
+            if [[ -z "$NUM_TRIALS" ]]; then
+                NUM_TRIALS="$1"
+            elif [[ -z "$CPU_VALUES" ]]; then
+                CPU_VALUES="$1"
+            else
+                log_error "Unknown argument: $1"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Apply defaults
+NUM_TRIALS="${NUM_TRIALS:-10}"
+CPU_VALUES="${CPU_VALUES:-1 2 4}"
+
+# Normalize: convert commas to spaces in CPU_VALUES
+CPU_VALUES="$(echo "$CPU_VALUES" | tr ',' ' ')"
+
+# Validate NUM_TRIALS is a positive integer
+if ! [[ "$NUM_TRIALS" =~ ^[0-9]+$ ]] || [ "$NUM_TRIALS" -le 0 ]; then
+    log_error "Invalid --trials value: '$NUM_TRIALS' (must be a positive integer)"
+    exit 1
+fi
+
+# Validate each CPU value is a positive integer
+for v in $CPU_VALUES; do
+    if ! [[ "$v" =~ ^[0-9]+$ ]] || [ "$v" -le 0 ]; then
+        log_error "Invalid CPU count in --cpus: '$v' (must be a positive integer)"
+        exit 1
+    fi
+done
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SWEEP_DIR="${WS_ROOT}/results/cpuset_sweep_${TIMESTAMP}"
 ENABLE_TRACING_SWEEP="${ENABLE_TRACING_SWEEP:-0}"

@@ -21,9 +21,11 @@ from launch.actions import (
     ExecuteProcess,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     TimerAction,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import (
     Command,
     FindExecutable,
@@ -134,7 +136,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # -------------------------------------------------------------------------
-    # 4. Load Controllers
+    # 4. Load Controllers (sequential, event-driven to avoid race conditions)
     # -------------------------------------------------------------------------
     load_joint_state_broadcaster = ExecuteProcess(
         cmd=[
@@ -160,20 +162,27 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # Only JSB is timer-delayed; subsequent controllers chain via OnProcessExit
     delayed_controllers = [
         TimerAction(
             period=controller_delay_val,
             actions=[load_joint_state_broadcaster],
         ),
-        TimerAction(
-            period=controller_delay_val + 2.0,
-            actions=[load_panda_arm_controller],
-        ),
-        TimerAction(
-            period=controller_delay_val + 3.0,
-            actions=[load_panda_hand_controller],
-        ),
     ]
+
+    # Chain: JSB exit -> arm controller -> hand controller
+    arm_after_jsb = RegisterEventHandler(
+        OnProcessExit(
+            target_action=load_joint_state_broadcaster,
+            on_exit=[load_panda_arm_controller],
+        )
+    )
+    hand_after_arm = RegisterEventHandler(
+        OnProcessExit(
+            target_action=load_panda_arm_controller,
+            on_exit=[load_panda_hand_controller],
+        )
+    )
 
     # -------------------------------------------------------------------------
     # 5. MoveIt move_group
@@ -200,16 +209,15 @@ def launch_setup(context, *args, **kwargs):
     # -------------------------------------------------------------------------
     # Optional: RViz
     # -------------------------------------------------------------------------
-    rviz_config_file = PathJoinSubstitution(
-        [pkg_ldos_harness, "config", "moveit.rviz"]
-    )
+    rviz_config_path = os.path.join(pkg_ldos_harness, "config", "moveit.rviz")
+    rviz_args = ["-d", rviz_config_path] if os.path.exists(rviz_config_path) else []
 
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         name="rviz2",
         output="screen",
-        arguments=["-d", rviz_config_file],
+        arguments=rviz_args,
         parameters=[
             robot_description,
             robot_description_semantic,
@@ -229,6 +237,9 @@ def launch_setup(context, *args, **kwargs):
         delayed_clock_bridge,
         delayed_spawn,
     ] + delayed_controllers + [
+        # Event-driven chain: JSB exit -> arm controller -> hand controller
+        arm_after_jsb,
+        hand_after_arm,
         delayed_moveit,
         delayed_rviz,
     ]

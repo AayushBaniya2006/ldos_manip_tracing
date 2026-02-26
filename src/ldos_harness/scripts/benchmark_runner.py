@@ -151,6 +151,9 @@ class TrialResult:
     per_core_cpu_mean: List[float] = field(default_factory=list)           # mean per core
     per_core_cpu_max: List[float] = field(default_factory=list)            # max per core
     active_cores: List[int] = field(default_factory=list)                  # cores with >5% mean usage
+    cpuset_cores: List[int] = field(default_factory=list)                  # cores allowed by cpuset
+    cpuset_filtered_cpu_mean: float = 0.0                                  # mean CPU% across cpuset cores only
+    cpuset_filtered_cpu_max: float = 0.0                                   # max CPU% across cpuset cores only
 
     def compute_derived_metrics(self):
         """Compute latency metrics from timestamps."""
@@ -230,6 +233,33 @@ class BenchmarkRunner(Node):
         self.markers.append(marker)
         self.get_logger().debug(f'Marker: {name} wall={wall_now:.6f}s ros={ros_now.nanoseconds}ns')
 
+    def _detect_cpuset(self) -> List[int]:
+        """Detect which CPU cores this process is allowed to use via cpuset/cgroup."""
+        allowed_cores = []
+        # Try /proc/self/status Cpus_allowed_list (works on all Linux)
+        try:
+            with open('/proc/self/status', 'r') as f:
+                for line in f:
+                    if line.startswith('Cpus_allowed_list:'):
+                        cpus_str = line.split(':', 1)[1].strip()
+                        for part in cpus_str.split(','):
+                            part = part.strip()
+                            if '-' in part:
+                                lo, hi = part.split('-', 1)
+                                allowed_cores.extend(range(int(lo), int(hi) + 1))
+                            else:
+                                allowed_cores.append(int(part))
+                        break
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # If we got all cores or nothing, cpuset is not restricting us
+        total_cores = psutil.cpu_count()
+        if len(allowed_cores) == 0 or len(allowed_cores) >= total_cores:
+            return []  # No cpuset restriction detected
+
+        return sorted(allowed_cores)
+
     def _start_cpu_sampling(self, sample_rate_hz: float = 10.0):
         """Start background CPU sampling at specified rate (aggregate + per-core)."""
         self._cpu_samples: List[float] = []
@@ -269,6 +299,12 @@ class BenchmarkRunner(Node):
                 f'samples={len(self._cpu_samples)}'
             )
 
+        # Detect cpuset restriction
+        cpuset_cores = self._detect_cpuset()
+        self.result.cpuset_cores = cpuset_cores
+        if cpuset_cores:
+            self.get_logger().info(f'Cpuset restriction detected: cores {cpuset_cores}')
+
         # Per-core statistics
         if self._per_core_cpu_samples:
             self.result.per_core_cpu_samples = self._per_core_cpu_samples
@@ -292,6 +328,26 @@ class BenchmarkRunner(Node):
                 f'Per-core: {len(self.result.active_cores)}/{num_cores} active cores '
                 f'(>5% mean): {self.result.active_cores}'
             )
+
+            # Cpuset-filtered statistics: only report cores within the allowed cpuset
+            if cpuset_cores:
+                cpuset_means = [self.result.per_core_cpu_mean[c] for c in cpuset_cores if c < num_cores]
+                cpuset_maxes = [self.result.per_core_cpu_max[c] for c in cpuset_cores if c < num_cores]
+                if cpuset_means:
+                    self.result.cpuset_filtered_cpu_mean = sum(cpuset_means) / len(cpuset_means)
+                    self.result.cpuset_filtered_cpu_max = max(cpuset_maxes)
+                    self.get_logger().info(
+                        f'Cpuset-filtered CPU ({len(cpuset_cores)} cores): '
+                        f'mean={self.result.cpuset_filtered_cpu_mean:.1f}%, '
+                        f'max={self.result.cpuset_filtered_cpu_max:.1f}%'
+                    )
+                # Flag cores active outside cpuset (indicates leakage)
+                outside_cpuset = [c for c in self.result.active_cores if c not in cpuset_cores]
+                if outside_cpuset:
+                    self.get_logger().warn(
+                        f'CPU activity detected OUTSIDE cpuset on cores: {outside_cpuset} '
+                        f'(expected only {cpuset_cores})'
+                    )
 
         # Capture memory at end of trial
         self.result.memory_percent = psutil.virtual_memory().percent
@@ -650,6 +706,12 @@ def main():
         if result.active_cores:
             total_cores = len(result.per_core_cpu_mean) if result.per_core_cpu_mean else 0
             print(f"Active cores: {result.active_cores} ({len(result.active_cores)}/{total_cores})")
+        if result.cpuset_cores:
+            print(f"Cpuset restriction: cores {result.cpuset_cores}")
+            print(f"Cpuset CPU: mean={result.cpuset_filtered_cpu_mean:.1f}%, max={result.cpuset_filtered_cpu_max:.1f}%")
+            outside = [c for c in result.active_cores if c not in result.cpuset_cores]
+            if outside:
+                print(f"WARNING: Activity outside cpuset on cores: {outside}")
 
     except Exception as e:
         print(f"FATAL: {e}", file=sys.stderr)
