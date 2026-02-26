@@ -49,7 +49,7 @@ if [[ -z "$SESSION_NAME" ]]; then
         TRACES_BASE="$WS_ROOT/traces"
         if [[ -d "$TRACES_BASE" ]]; then
             # Find most recently modified directory with .session_name
-            for trace_subdir in $(ls -t "$TRACES_BASE" 2>/dev/null || true); do
+            while IFS= read -r trace_subdir; do
                 candidate="$TRACES_BASE/$trace_subdir"
                 if [[ -d "$candidate" ]]; then
                     SESSION_NAME=$(find_session_from_file "$candidate" || true)
@@ -58,7 +58,7 @@ if [[ -z "$SESSION_NAME" ]]; then
                         break
                     fi
                 fi
-            done
+            done < <(ls -1t "$TRACES_BASE" 2>/dev/null)
         fi
     fi
 

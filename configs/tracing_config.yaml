@@ -1,5 +1,7 @@
 # LTTng Tracing Configuration for ros2_tracing
-# Used by start_trace.sh
+# Reference/defaults document for event selection and buffers.
+# Note: start_trace.sh currently uses hardcoded tracing settings and does not
+# parse this YAML directly.
 
 session:
   name_prefix: "ldos_trace"

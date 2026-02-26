@@ -144,7 +144,8 @@ def generate_summary(df: pd.DataFrame, output_path: str):
     lines.append(f"\nExperiment Duration: {duration:.1f} seconds")
     lines.append(f"Total Samples: {len(df)}")
     lines.append(f"Unique Processes: {df['process'].nunique()}")
-    lines.append(f"CPUs Used: {sorted(df['cpu_id'].dropna().unique().astype(int).tolist())}")
+    cpu_ids = pd.to_numeric(df['cpu_id'], errors='coerce').dropna().unique().astype(int).tolist()
+    lines.append(f"CPUs Used: {sorted(cpu_ids)}")
 
     lines.append("\n" + "-" * 40)
     lines.append("Per-Process Statistics:")

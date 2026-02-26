@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Configurable parameters
-MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-move_action}"
+MOVEIT_ACTION_NAME="${MOVEIT_ACTION_NAME:-/move_action}"
 INIT_WAIT="${INIT_WAIT:-25}"  # Must match moveit_delay in full_stack.launch.py
 BENCHMARK_TIMEOUT="${BENCHMARK_TIMEOUT:-60.0}"
 

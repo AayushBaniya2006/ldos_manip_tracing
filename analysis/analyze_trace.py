@@ -93,7 +93,15 @@ def check_babeltrace2_import():
         sys.exit(1)
 
 
-bt2 = check_babeltrace2_import()
+bt2 = None
+
+
+def get_bt2():
+    """Lazy-load babeltrace2 only when trace parsing is requested."""
+    global bt2
+    if bt2 is None:
+        bt2 = check_babeltrace2_import()
+    return bt2
 
 import pandas as pd
 
@@ -274,6 +282,7 @@ class TraceAnalyzer:
 
     def analyze(self) -> TraceMetrics:
         """Process the trace and extract metrics."""
+        bt2_mod = get_bt2()
         print(f"Analyzing trace: {self.trace_path}")
 
         # Find the trace data (may be in subdirectory)
@@ -286,7 +295,7 @@ class TraceAnalyzer:
 
         # Create message iterator
         try:
-            msg_it = bt2.TraceCollectionMessageIterator(str(trace_data_path))
+            msg_it = bt2_mod.TraceCollectionMessageIterator(str(trace_data_path))
         except Exception as e:
             print(f"ERROR: Failed to open trace: {e}")
             return self.metrics
@@ -296,7 +305,7 @@ class TraceAnalyzer:
         last_ts = None
 
         for msg in msg_it:
-            if type(msg) is not bt2._EventMessageConst:
+            if type(msg) is not bt2_mod._EventMessageConst:
                 continue
 
             event = msg.event
@@ -490,7 +499,10 @@ class TraceAnalyzer:
     def _handle_callback_register(self, event):
         """Handle callback registration event with strict control loop identification."""
         callback_ptr = event['callback']
-        symbol = str(event.get('symbol', 'unknown'))
+        try:
+            symbol = str(event['symbol'])
+        except (KeyError, TypeError):
+            symbol = 'unknown'
         self._callback_names[callback_ptr] = symbol
 
         # Extract node name if available (from symbol demangling)
@@ -813,15 +825,38 @@ class TraceAnalyzer:
                   "(messages not yet received or trace ended)")
 
 
-def aggregate_results(result_dir: Path, output_path: Path):
+def _load_trial_id_filter(trial_id_file: Optional[Path]) -> Optional[set]:
+    """Load a trial-id allowlist from a newline-delimited file."""
+    if not trial_id_file:
+        return None
+    if not trial_id_file.exists():
+        print(f"WARNING: Trial ID filter file not found: {trial_id_file}")
+        return None
+
+    trial_ids = set()
+    with open(trial_id_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                trial_ids.add(line)
+    return trial_ids
+
+
+def aggregate_results(result_dir: Path, output_path: Path, trial_id_file: Optional[Path] = None):
     """Aggregate multiple trial results into a summary CSV."""
     print(f"\nAggregating results from: {result_dir}")
 
+    trial_id_filter = _load_trial_id_filter(trial_id_file)
+    if trial_id_filter:
+        print(f"Filtering to {len(trial_id_filter)} trial IDs from: {trial_id_file}")
+
     rows = []
-    for result_file in result_dir.glob("*_result.json"):
+    for result_file in sorted(result_dir.glob("*_result.json")):
         try:
             with open(result_file) as f:
                 data = json.load(f)
+            if trial_id_filter and data.get('trial_id') not in trial_id_filter:
+                continue
             rows.append(data)
         except Exception as e:
             print(f"Warning: Failed to load {result_file}: {e}")
@@ -831,6 +866,8 @@ def aggregate_results(result_dir: Path, output_path: Path):
         return
 
     df = pd.DataFrame(rows)
+    if 'trial_id' in df.columns:
+        df = df.sort_values('trial_id').reset_index(drop=True)
 
     # Select key columns for summary
     key_cols = [
@@ -869,6 +906,8 @@ def main():
                         help='Only aggregate existing results, skip trace analysis')
     parser.add_argument('--control-rate-hz', type=float, default=500.0,
                         help='Expected control loop rate in Hz (default: 500 Hz for ros2_control)')
+    parser.add_argument('--trial-id-file',
+                        help='Optional newline-delimited allowlist of trial IDs for aggregation')
 
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
@@ -892,7 +931,11 @@ def main():
     if args.result_dir:
         result_dir = Path(args.result_dir)
         summary_path = output_dir / "summary.csv"
-        aggregate_results(result_dir, summary_path)
+        aggregate_results(
+            result_dir,
+            summary_path,
+            Path(args.trial_id_file) if args.trial_id_file else None,
+        )
 
 
 if __name__ == '__main__':

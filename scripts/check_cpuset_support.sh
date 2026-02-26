@@ -170,7 +170,23 @@ rmdir "$TEST_CGROUP" 2>/dev/null || true
 CGROUP_TEST_PASSED=false
 if mkdir "$TEST_CGROUP" 2>/dev/null; then
     if [ -f "$TEST_CGROUP/cpuset.cpus" ]; then
-        if echo "0" > "$TEST_CGROUP/cpuset.cpus" 2>/dev/null; then
+        # cpuset.mems must be set before cpuset.cpus on cgroups v2
+        TEST_MEMS=$(cat "$USER_CGROUP/cpuset.mems.effective" 2>/dev/null || cat "$USER_CGROUP/cpuset.mems" 2>/dev/null || echo "0")
+        if [ -f "$TEST_CGROUP/cpuset.mems" ]; then
+            echo "$TEST_MEMS" > "$TEST_CGROUP/cpuset.mems" 2>/dev/null || true
+        fi
+
+        # Pick the first CPU from the parent's effective set (don't assume CPU 0 is allowed)
+        TEST_CPU_SET=$(cat "$USER_CGROUP/cpuset.cpus.effective" 2>/dev/null || cat "$USER_CGROUP/cpuset.cpus" 2>/dev/null || echo "0")
+        TEST_CPU_FIRST="${TEST_CPU_SET%%,*}"
+        if [[ "$TEST_CPU_FIRST" == *-* ]]; then
+            TEST_CPU="${TEST_CPU_FIRST%%-*}"
+        else
+            TEST_CPU="$TEST_CPU_FIRST"
+        fi
+        [ -z "$TEST_CPU" ] && TEST_CPU="0"
+
+        if echo "$TEST_CPU" > "$TEST_CGROUP/cpuset.cpus" 2>/dev/null; then
             CGROUP_TEST_PASSED=true
             echo -e "$PASS cgroup creation with cpuset works"
         else
@@ -195,7 +211,15 @@ fi
 
 echo ""
 echo -n "9. Checking CPU count... "
-NUM_CPUS=$(nproc)
+if command -v nproc >/dev/null 2>&1; then
+    NUM_CPUS=$(nproc)
+elif command -v getconf >/dev/null 2>&1; then
+    NUM_CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "0")
+elif command -v sysctl >/dev/null 2>&1; then
+    NUM_CPUS=$(sysctl -n hw.ncpu 2>/dev/null || echo "0")
+else
+    NUM_CPUS=0
+fi
 echo -e "$INFO System has $NUM_CPUS CPUs available"
 
 if [ "$NUM_CPUS" -lt 4 ]; then

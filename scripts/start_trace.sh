@@ -77,7 +77,7 @@ lttng add-context -s "$SESSION_NAME" --userspace --type=vpid --type=vtid --type=
 
 # Start tracing
 log_info "Starting trace..."
-lttng start
+lttng start "$SESSION_NAME"
 
 # Verify session is active
 if ! lttng list "$SESSION_NAME" 2>/dev/null | grep -q "Tracing session.*ACTIVE"; then

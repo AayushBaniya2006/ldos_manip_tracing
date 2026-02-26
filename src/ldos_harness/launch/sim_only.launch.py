@@ -18,13 +18,13 @@ from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     LogInfo,
+    OpaqueFunction,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     LaunchConfiguration,
-    PythonExpression,
 )
 from ament_index_python.packages import get_package_share_directory
 
@@ -90,19 +90,24 @@ def generate_launch_description():
     # Gazebo Harmonic launch
     # When headless=true: use -s (server only) + --headless-rendering
     # When headless=false: just -r (run immediately with GUI)
-    gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_ros_gz_sim, "launch", "gz_sim.launch.py")
-        ),
-        launch_arguments={
-            "gz_args": PythonExpression([
-                "'-s --headless-rendering -r empty.sdf' if '",
-                headless,
-                "' == 'true' else '-r empty.sdf'"
-            ]),
-            "on_exit_shutdown": "true",
-        }.items(),
-    )
+    def create_gz_sim(context):
+        headless_val = LaunchConfiguration("headless").perform(context).lower() == "true"
+        world_val = LaunchConfiguration("world").perform(context).strip() or "empty.sdf"
+        if headless_val:
+            gz_args = f"-s --headless-rendering -r {world_val}"
+        else:
+            gz_args = f"-r {world_val}"
+        return [IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_ros_gz_sim, "launch", "gz_sim.launch.py")
+            ),
+            launch_arguments={
+                "gz_args": gz_args,
+                "on_exit_shutdown": "true",
+            }.items(),
+        )]
+
+    gz_sim = OpaqueFunction(function=create_gz_sim)
 
     return LaunchDescription(
         declared_arguments

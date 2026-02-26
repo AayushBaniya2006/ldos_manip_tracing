@@ -72,7 +72,8 @@ class MsgFloodNode(Node):
 
         # Publish message
         msg = String()
-        msg.data = f'{self.msg_count}:{self.payload}'
+        # Keep payload size exact for reproducible throughput accounting.
+        msg.data = self.payload
         self.publisher.publish(msg)
         self.msg_count += 1
 

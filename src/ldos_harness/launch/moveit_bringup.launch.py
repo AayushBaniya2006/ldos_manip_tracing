@@ -85,16 +85,15 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # RViz (optional)
-    rviz_config_file = PathJoinSubstitution(
-        [pkg_ldos_harness, "config", "moveit.rviz"]
-    )
+    rviz_config_path = os.path.join(pkg_ldos_harness, "config", "moveit.rviz")
+    rviz_args = ["-d", rviz_config_path] if os.path.exists(rviz_config_path) else []
 
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         name="rviz2",
         output="screen",
-        arguments=["-d", rviz_config_file],
+        arguments=rviz_args,
         parameters=[
             robot_description,
             robot_description_semantic,

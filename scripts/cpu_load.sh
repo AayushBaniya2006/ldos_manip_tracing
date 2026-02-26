@@ -1,6 +1,6 @@
 #!/bin/bash
 # cpu_load.sh - Generate CPU contention for load testing
-# Usage: ./cpu_load.sh [num_workers] [duration_seconds]
+# Usage: ./cpu_load.sh [num_workers] [duration_seconds] [cpu_load_percent]
 #
 # Uses stress-ng to create CPU load. Pins workers to specific cores
 # to create predictable contention patterns.
@@ -8,7 +8,8 @@
 set -euo pipefail
 
 NUM_WORKERS="${1:-4}"
-DURATION="${2:-300}"  # 5 minutes default
+DURATION="${2:-300}"  # 5 minutes default, 0 = run until killed
+CPU_LOAD_PERCENT="${3:-80}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,7 +27,21 @@ fi
 # Get CPU count
 NUM_CPUS=$(nproc)
 log_info "System has $NUM_CPUS CPUs"
-log_info "Starting $NUM_WORKERS CPU stress workers for ${DURATION}s"
+if [ "$DURATION" -gt 0 ]; then
+    log_info "Starting $NUM_WORKERS CPU stress workers for ${DURATION}s at ${CPU_LOAD_PERCENT}% load"
+else
+    log_info "Starting $NUM_WORKERS CPU stress workers until killed at ${CPU_LOAD_PERCENT}% load"
+fi
+
+STRESS_ARGS=(
+    --cpu "$NUM_WORKERS"
+    --cpu-method matrixprod
+    --cpu-load "$CPU_LOAD_PERCENT"
+    --metrics-brief
+)
+if [ "$DURATION" -gt 0 ]; then
+    STRESS_ARGS+=(--timeout "${DURATION}s")
+fi
 
 # Calculate which CPUs to use
 # Leave CPU 0 for system tasks, use remaining CPUs
@@ -41,21 +56,11 @@ if [ "$NUM_CPUS" -gt 1 ]; then
     log_info "Pinning workers to CPUs: $CPU_LIST"
 
     # Use taskset to pin stress-ng workers
-    taskset -c "$CPU_LIST" stress-ng \
-        --cpu "$NUM_WORKERS" \
-        --cpu-method matrixprod \
-        --cpu-load 80 \
-        --timeout "${DURATION}s" \
-        --metrics-brief &
+    taskset -c "$CPU_LIST" stress-ng "${STRESS_ARGS[@]}" &
 else
     # Single CPU system - just run without pinning
     log_info "Single CPU system - running without affinity"
-    stress-ng \
-        --cpu "$NUM_WORKERS" \
-        --cpu-method matrixprod \
-        --cpu-load 80 \
-        --timeout "${DURATION}s" \
-        --metrics-brief &
+    stress-ng "${STRESS_ARGS[@]}" &
 fi
 
 STRESS_PID=$!
@@ -75,8 +80,7 @@ cleanup() {
     kill "$STRESS_PID" 2>/dev/null || true
     # Also kill any child processes (stress-ng spawns workers)
     pkill -P "$STRESS_PID" 2>/dev/null || true
-    # Fallback: kill any stress-ng processes started by this script
-    pkill -P $$ 2>/dev/null || true
+    # Note: removed pkill -P $$ which would kill sibling processes in experiment suite
 }
 trap cleanup SIGTERM SIGINT EXIT
 

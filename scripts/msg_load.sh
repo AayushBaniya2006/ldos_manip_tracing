@@ -1,6 +1,6 @@
 #!/bin/bash
 # msg_load.sh - Generate DDS message load for testing
-# Usage: ./msg_load.sh [rate_hz] [num_publishers] [duration_seconds]
+# Usage: ./msg_load.sh [rate_hz] [num_publishers] [duration_seconds] [payload_size]
 #
 # Starts multiple publisher nodes that flood the DDS network
 # with messages at the specified rate.
@@ -13,6 +13,7 @@ WS_ROOT="$(dirname "$SCRIPT_DIR")"
 RATE_HZ="${1:-1000}"
 NUM_PUBS="${2:-4}"
 DURATION="${3:-300}"
+PAYLOAD_SIZE="${4:-1024}"
 
 GREEN='\033[0;32m'
 NC='\033[0m'
@@ -40,6 +41,7 @@ source_ros() {
 source_ros
 
 log_info "Starting $NUM_PUBS message flood publishers at ${RATE_HZ} Hz each"
+log_info "Payload size: ${PAYLOAD_SIZE} bytes"
 log_info "Duration: ${DURATION}s"
 
 # Array to store PIDs
@@ -51,7 +53,7 @@ for i in $(seq 1 "$NUM_PUBS"); do
     ros2 run ldos_harness msg_flood_node.py \
         --rate "$RATE_HZ" \
         --topic "/flood_topic_$i" \
-        --payload-size 1024 &
+        --payload-size "$PAYLOAD_SIZE" &
     PID=$!
 
     # Brief pause to let process start
@@ -69,7 +71,7 @@ for i in $(seq 1 "$NUM_PUBS"); do
         ros2 run ldos_harness msg_flood_node.py \
             --rate "$RATE_HZ" \
             --topic "/flood_topic_$i" \
-            --payload-size 1024 &
+            --payload-size "$PAYLOAD_SIZE" &
         PID=$!
         sleep 0.2
 
@@ -89,6 +91,14 @@ fi
 
 log_info "Successfully started ${#PIDS[@]}/$NUM_PUBS publishers"
 
+if [ "${#PIDS[@]}" -ne "$NUM_PUBS" ] && [ "${ALLOW_PARTIAL_MSG_LOAD:-false}" != "true" ]; then
+    log_info "ERROR: Partial publisher startup is not allowed (${#PIDS[@]}/$NUM_PUBS)"
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    exit 1
+fi
+
 # Handle termination
 cleanup() {
     log_info "Stopping message flood nodes..."
@@ -98,7 +108,13 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT EXIT
 
-# Wait for duration
-sleep "$DURATION"
+# Wait for duration (0 = run until killed)
+if [ "$DURATION" -gt 0 ]; then
+    sleep "$DURATION"
+else
+    while true; do
+        sleep 3600
+    done
+fi
 
 log_info "Message load generator finished"

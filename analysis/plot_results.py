@@ -17,9 +17,9 @@ from typing import Dict, List, Any, Optional
 try:
     import numpy as np
     import pandas as pd
-    import matplotlib.pyplot as plt
     import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
+    matplotlib.use('Agg')  # Non-interactive backend (must be before pyplot import)
+    import matplotlib.pyplot as plt
 except ImportError as e:
     print(f"ERROR: Missing dependency: {e}")
     print("Install with: pip install pandas matplotlib numpy")

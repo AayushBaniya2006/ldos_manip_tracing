@@ -226,6 +226,7 @@ check_python() {
         "matplotlib"
         "scipy"
         "yaml:pyyaml"
+        "psutil"
     )
 
     local missing_pkgs=()

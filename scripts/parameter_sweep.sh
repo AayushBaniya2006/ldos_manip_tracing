@@ -134,6 +134,9 @@ get_scenario_for_param() {
 SWEEP_OUTPUT_DIR="$WS_ROOT/results/${SWEEP_ID}"
 mkdir -p "$SWEEP_OUTPUT_DIR"
 
+# Record sweep start time for use in final metadata
+SWEEP_START_TIME="$(date -Iseconds)"
+
 # Save sweep metadata
 cat > "$SWEEP_OUTPUT_DIR/sweep_metadata.json" << EOF
 {
@@ -242,7 +245,7 @@ cat > "$SWEEP_OUTPUT_DIR/sweep_metadata.json" << EOF
     "parameter": "$PARAM_NAME",
     "values": [$( echo "$VALUES" | sed 's/ /, /g' )],
     "trials_per_level": $TRIALS_PER_LEVEL,
-    "start_time": "$(date -Iseconds)",
+    "start_time": "$SWEEP_START_TIME",
     "end_time": "$(date -Iseconds)",
     "hostname": "$(hostname)",
     "completed_values": [$(IFS=,; echo "${COMPLETED_VALUES[*]}" | sed 's/,/, /g')],
