@@ -17,7 +17,7 @@ This harness measures **how system load affects ROS 2 manipulation performance**
 1. **Quantified DDS vulnerability** - First systematic measurement showing ROS 2 manipulation fails completely under message flood before showing any CPU degradation
 2. **Manipulation domain coverage** - Extends prior work on navigation robots to manipulation stacks (MoveIt + ros2_control)
 3. **Reproducible methodology** - Fully automated harness for CloudLab with kernel-level tracing
-4. **Realistic CPU isolation** - cgroups v2 cpuset experiments simulate embedded systems (Jetson) more accurately than artificial stress
+4. **Realistic CPU isolation** - `taskset` (sched_setaffinity) CPU pinning simulates embedded systems (Jetson) more accurately than artificial stress. Kernel-enforced, verified via `/proc/PID/status`
 
 ### Related Research
 
@@ -80,7 +80,7 @@ This motion is repeated under different load conditions:
 | **Baseline** | None | All trials succeed |
 | **CPU Load** | 4 workers x 80% CPU (stress-ng) | Measure planning degradation |
 | **Message Load** | 4000 msg/s DDS flood | System failure |
-| **cpuset_limited** | cgroups v2 CPU isolation (1-4 CPUs) | Realistic embedded constraint |
+| **cpuset_limited** | `taskset` CPU pinning (1-8 CPUs) | Realistic embedded constraint |
 
 ### Metrics Collected (T1-T5)
 
@@ -106,7 +106,15 @@ This motion is repeated under different load conditions:
 
 ### CPU Isolation Sweep Results (February 2026, CloudLab AMD EPYC 32-core)
 
-CPU isolation via `taskset` (sched_setaffinity), verified by `/proc/PID/status` `Cpus_allowed_list`. All ROS processes confirmed pinned to designated CPUs via independent CPU monitor data.
+> **Isolation mechanism: `taskset -c` (Linux `sched_setaffinity` syscall)**
+>
+> `taskset` sets a CPU affinity bitmask on the process. The Linux kernel scheduler **will not run the process on any CPU outside this mask**. The affinity is:
+> - **Inherited across `fork(2)`** — all child processes get the same restriction
+> - **Preserved across `execve(2)`** — launching new binaries keeps the restriction
+>
+> This means `taskset -c 31 ros2 launch ...` restricts the launch process AND every ROS node it spawns to CPU 31. No cgroups needed.
+>
+> **Verification:** Every trial checks `/proc/PID/status` → `Cpus_allowed_list` for all ROS processes. An independent background CPU monitor continuously samples actual CPU usage. Both confirm correct pinning across all configs.
 
 | ROS CPUs | Trials | Success | Planning (ms) | Execution (ms) | Total (ms) | Isolation Verified |
 |----------|--------|---------|---------------|----------------|------------|--------------------|
@@ -184,67 +192,68 @@ ros2 run ldos_harness msg_flood_node.py --rate 1000 --topic /flood_topic_4 &
 - MoveIt commonly reports `CONTROL_FAILED` (error code `-4`)
 - Harness records this explicitly as `control_failed` (with raw MoveIt error code/label)
 
-### CPU Isolation (cgroups v2 cpuset) - NEW
+### CPU Isolation (`taskset` / sched_setaffinity)
 
-Instead of artificial CPU stress (stress-ng), this scenario uses **real CPU resource limitation** via Linux cgroups v2 cpuset. This simulates embedded systems (Jetson Nano, Xavier) more realistically.
+Instead of artificial CPU stress (stress-ng), this scenario uses **real CPU resource limitation** via Linux `taskset` (`sched_setaffinity` syscall). This simulates embedded systems (Jetson Nano, Xavier) more realistically by hard-limiting which CPUs the ROS stack can use.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    CloudLab Node (auto-detect CPUs)                 │
 ├───────────────────────────────┬─────────────────────────────────────┤
-│   GAZEBO SCOPE (broad cpuset) │   ROS STACK SCOPE (LIMITED)        │
+│   GAZEBO (taskset: CPUs 0-N)  │   ROS STACK (taskset: CPUs N+1-31) │
 │   ─────────────────────────   │   ───────────────────────────      │
 │   • gz-sim8 (Gazebo server)   │   • move_group (MoveIt)            │
 │                               │   • robot_state_publisher          │
 │   (Physics + gz_ros2_control  │   • ros_gz_bridge (clock)          │
 │    may run in this scope,     │   • benchmark_runner.py            │
 │    including controller mgr)  │                                     │
-│                               │                                     │
-│   (Receives all CPUs except   │                                     │
-│    the ROS-limited set)       │                                     │
+│                               │   Kernel enforces: these processes  │
+│   (Receives all CPUs except   │   CANNOT run on Gazebo CPUs.       │
+│    the ROS-limited set)       │   Verified via /proc/PID/status.   │
 └───────────────────────────────┴─────────────────────────────────────┘
+```
+
+**How it works:**
+```bash
+# This is the core of the isolation — one line:
+taskset -c "30-31" ros2 launch ldos_harness ros_stack.launch.py
+
+# The kernel's sched_setaffinity restricts this process AND all children
+# (fork inherits, execve preserves) to CPUs 30-31. No cgroups needed.
 ```
 
 **Quick Start:**
 ```bash
-# Check cpuset support
+# Check system support
 make check_cpuset
 
 # Run with 2 CPUs for ROS stack (default)
 make run_cpuset NUM_TRIALS=10
 
-# Run CPU sweep (1, 2, 4 CPUs) to find breaking point
+# Run CPU sweep (1, 2, 4, 8 CPUs) to find saturation point
 make sweep_cpuset NUM_TRIALS=5
 
 # Custom CPU count
 ROS_CPU_COUNT=1 make run_cpuset NUM_TRIALS=10
 ```
 
-**How it works:**
-- Attempts delegated cgroup cpuset placement first
-- If SSH session cgroup migration is denied, falls back to `systemd-run --user --scope -p AllowedCPUs=X` (still real cgroup cpuset)
-- No root required
-- Gazebo runs on a broad CPU set (all CPUs except the ROS-limited set)
-- ROS user-space stack constrained to 1, 2, or 4 CPUs
-- Auto-detects total CPU count at runtime
+**Why `taskset` and not cgroups v2 cpuset?**
+- cgroups v2 cpuset consistently fails from SSH sessions due to cross-branch migration restrictions (`echo $$ > cgroup.procs` denied)
+- `systemd-run --scope -p AllowedCPUs=X` silently ignores AllowedCPUs for child processes (systemd 255 bug)
+- `taskset` calls `sched_setaffinity()` directly — no cgroup infrastructure needed, works from any context, and the kernel enforces it unconditionally
 
-**Interpretation caveat (important):**
-- This is a **split cpuset experiment**.
-- `move_group`, bridges, and benchmark userspace are constrained to the ROS-limited CPU set.
-- `gz_ros2_control` / `controller_manager` may execute inside the Gazebo process (Gazebo scope), depending on runtime embedding.
-- Treat the results as ROS userspace CPU-budget sensitivity under a split simulator/ROS scope design.
+**Interpretation caveat:**
+- `move_group`, bridges, and benchmark are constrained to the ROS-limited CPU set
+- `gz_ros2_control` / `controller_manager` may execute inside the Gazebo process (Gazebo scope), depending on runtime embedding
+- Treat the results as ROS userspace CPU-budget sensitivity under a split simulator/ROS scope design
 
-**Valid cpuset runs vs invalid runs:**
-- Valid: log shows direct cpuset success or `systemd-run --user --scope ... AllowedCPUs`
-- Invalid for cpuset claims: log shows `Falling back to taskset`
-
-### CPU-Only cpuset Workflow (No LTTng Required)
+### CPU-Only Isolation Workflow (No LTTng Required)
 
 ```bash
 # Clean stale state (recommended between runs)
 make cleanup_processes
 
-# Verify cgroup cpuset delegation/support
+# Verify system support (taskset, CPU count, etc.)
 make check_cpuset
 
 # CPU-count experiments (disable tracing noise)
@@ -344,7 +353,7 @@ make profile_moveit          # MoveIt-specific
 
 ## Future Work
 
-1. **CPU isolation analysis** - Run cpuset sweep experiments to find minimum viable CPU count for manipulation
+1. **~~CPU isolation analysis~~** - DONE. Sweep found saturation at 2 CPUs (see results above). **Next: combine CPU restriction with LDoS load injection**
 
 2. **Find exact DDS breaking point** - Sweep message rates (100, 500, 1000, 2000, 3000 msg/s) to identify failure threshold
 
@@ -381,10 +390,10 @@ make run_cpu_load      # CPU load trials (stress-ng)
 make run_msg_load      # Message load trials (DDS flood)
 make run_all           # All scenarios
 
-# === CPU Isolation (cgroups v2 cpuset) ===
-make check_cpuset      # Verify cgroups v2 cpuset support
-make run_cpuset        # Run cpuset-limited experiments
-make sweep_cpuset      # Sweep ROS stack CPUs (1, 2, 4)
+# === CPU Isolation (taskset / sched_setaffinity) ===
+make check_cpuset      # Verify taskset + system CPU support
+make run_cpuset        # Run CPU-limited experiments (uses taskset)
+make sweep_cpuset      # Sweep ROS stack CPUs (1, 2, 4, 8)
 make cleanup_processes # Kill stale ROS/Gazebo/LTTng state
 make archive_latest    # Archive latest experiment artifacts (TAG=...)
 
@@ -421,9 +430,10 @@ ldos_manip_tracing/
 │   ├── stop_trace.sh            # LTTng session stop
 │   ├── cpu_load.sh              # stress-ng wrapper
 │   ├── msg_load.sh              # DDS flood launcher
-│   ├── cpuset_launch.sh         # cgroups v2 CPU isolation wrapper
-│   ├── cpuset_sweep.sh          # CPU count parameter sweep
-│   ├── check_cpuset_support.sh  # Verify cgroups v2 support
+│   ├── cpuset_launch_v2.sh      # taskset (sched_setaffinity) CPU isolation wrapper
+│   ├── cpuset_sweep.sh          # CPU count parameter sweep (1, 2, 4, 8 CPUs)
+│   ├── check_cpuset_support.sh  # Verify taskset + system CPU support
+│   ├── cpu_monitor.sh           # Background CPU usage monitor with affinity verification
 │   ├── cleanup_harness_processes.sh # Standard stale-process/session cleanup
 │   ├── archive_latest_experiment.sh # Archive latest run artifacts for reporting
 │   ├── cpu_profile.sh           # perf + FlameGraph
@@ -525,14 +535,14 @@ sleep 10
 make smoke_test
 ```
 
-### cpuset run fell back to `taskset` (invalid for cpuset claims)
+### Verifying CPU isolation is working
 ```bash
+# Check that taskset support and CPU detection work:
 make check_cpuset
-# If delegation checks fail:
-sudo ./scripts/setup_cpuset_delegation.sh
-exit
-# SSH back in, then:
-make cleanup_processes
+
+# During a run, verify processes are pinned:
+grep Cpus_allowed_list /proc/$(pgrep -f move_group)/status
+# Should show only the assigned CPUs (e.g., "31" for 1-CPU, "30-31" for 2-CPU)
 ```
 
 ### `START_STATE_INVALID` / MoveIt error `-26` during cpuset sweeps
